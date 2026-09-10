@@ -1,16 +1,16 @@
 # Progress
 
 ## Current phase
-**Phase 1 — Skeleton, safety core, platform adapter** (done)
+**Phase 2 — Tier 0 grammar + remaining tools** (done)
 
-Next up: **Phase 2 — Tier 0 grammar + remaining tools**. Needed spec sections: 0, 6, 7, 8, 12, 13.
+Next up: **Phase 3 — Voice in, voice out**. Needed spec sections: 0, 3, 6D, 8, 12, 13.
 
 ## Phase status
 
 | Phase | Name | Status |
 | --- | --- | --- |
 | 1 | Skeleton, safety core, platform adapter | Done |
-| 2 | Tier 0 grammar + remaining tools | Not started |
+| 2 | Tier 0 grammar + remaining tools | Done |
 | 3 | Voice in, voice out | Not started |
 | 4 | Tier 1 local LLM | Not started |
 | 5 | Guard rails, tray, command bar, packaging prep | Not started |
@@ -42,3 +42,22 @@ Next up: **Phase 2 — Tier 0 grammar + remaining tools**. Needed spec sections:
   `~/Desktop/Test` if unwanted. Nothing broke. See DECISIONS.md for the
   three PlatformAdapter methods added beyond the spec's literal listing,
   and for why set_volume is unimplemented on Windows for now.
+
+- 2026-09-10 — Phase 2 built: router/tier0_grammar.py (real Tier 0 grammar,
+  replacing Phase 1's _stub_parse), tools/web.py, tools/documents.py,
+  tools/apps.py, and the rest of tools/system.py (set_volume,
+  take_screenshot, lock_screen). Added `convert_docx_to_pdf` to
+  PlatformAdapter (Word COM on Windows) for the LibreOffice-not-present
+  fallback. Fixed the Pillow dependency properly (added to pyproject.toml,
+  removed the type: ignore) rather than leaving it suppressed. 58 tests pass
+  (28 new); mypy --strict clean on the whole vox/ package; grep gate clean.
+  Found and fixed a real regex-ordering bug during manual acceptance
+  testing ("search for X" was matching the bare "search" alternative first,
+  producing "Searching for for X"). Real acceptance runs against the actual
+  machine left behind `~/Desktop/Physics Notes`, `~/Desktop/Screenshot_*.png`,
+  `~/Documents/Draft Report.docx`, and `~/Documents/Draft Report.pdf` —
+  left in place as evidence, delete if unwanted. Nothing broke. See
+  DECISIONS.md for: which Section 7 patterns were deferred to Phase 6/7
+  (tools don't exist yet), why context-pronoun patterns always clarify,
+  the minimal-by-design Hindi/Hinglish coverage, and the mypy stub-override
+  approach for python-docx/reportlab/yt-dlp.

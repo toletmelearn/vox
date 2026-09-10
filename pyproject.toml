@@ -9,7 +9,12 @@ dependencies = [
     "rich",
     "send2trash",
     "psutil",
+    "requests",
+    "yt-dlp",
+    "python-docx",
+    "reportlab",
     "pywin32; sys_platform == 'win32'",
+    "pillow; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -21,11 +26,20 @@ dev = [
     "types-psutil",
     "types-pywin32",
     "types-Send2Trash",
+    "types-requests",
 ]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# python-docx, reportlab and yt-dlp ship no type stubs anywhere (unlike the
+# pillow case, there is no real fix to install here) — scoped at the module
+# boundary via the standard mypy mechanism for stub-less third-party
+# libraries, rather than a type: ignore on every call site. See DECISIONS.md.
+[[tool.mypy.overrides]]
+module = ["docx.*", "reportlab.*", "yt_dlp.*"]
+ignore_missing_imports = true
 
 [build-system]
 requires = ["setuptools>=68"]

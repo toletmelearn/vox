@@ -88,3 +88,84 @@ so it doesn't trigger the "never invent a dependency" invariant.
 ### Declined: no additional generic execution primitive
 No feature in Phase 1 needed one. Recorded here per the standing instruction
 in invariant 1 — nothing to add yet.
+
+## Phase 2
+
+### Tier 0 grammar omits patterns for tools that don't exist yet
+Section 7's pattern list includes phrasings for `open_target`, `play_on_target`,
+`compose_whatsapp_message`, and `recall_activity` — none of which are built
+until Phase 6/7. Matching those phrasings now would route to a tool name the
+registry doesn't have, which `app.py`'s guard layer already handles
+gracefully ("I don't have that tool") but would be a dead pattern with no
+real behaviour. Deferred to their respective phases instead.
+
+### Context-pronoun patterns always return a clarification
+"open it", "make that a PDF", etc. are registered in the grammar (so the
+phrasing is recognised) but always produce `RouteResult(clarification=...)`
+rather than resolving a pronoun, because `Context.last_artifact` doesn't
+exist until Phase 6. This matches the spec's own fallback rule ("if context
+is empty or expired, return a clarification") — it's honest about the
+current state rather than silently no-op'ing.
+
+### Hindi/Hinglish grammar coverage is intentionally minimal
+Only the literal example from spec Section 6F is implemented: a verb-alias
+substitution map for verbs whose word order matches English (kholo→open,
+chalao→play, dhoondo→search, bhejo→send, band karo→stop) plus one dedicated
+reversed-word-order pattern for folder creation ("`<name>` ke naam se ek
+folder banao"). Building a general Hindi/Hinglish grammar engine is exactly
+what the spec says Tier 1 is for ("Route anything Tier 0 misses to Tier 1");
+Tier 0's job here is the cheap, high-value literal case only.
+
+### `set_volume` remains unsupported on Windows
+Reaffirming the Phase 1 decision now that the tool is actually wired up: no
+`pycaw`/`comtypes` in Section 3, so `WindowsAdapter.set_volume` still raises
+`UnsupportedCapability` and the tool reports `ok=False` with a clear spoken
+reason. Linux's `pactl`-backed version works. Still flagging this as a gap
+to close deliberately (amend Section 3, or accept relative-only volume) —
+not decided here.
+
+### `convert_docx_to_pdf` added to `PlatformAdapter`
+`tools/documents.py::convert_to_pdf`'s second fallback (Word COM via
+`pywin32`) is inherently Windows-specific, so it's a new adapter method
+(`windows.py` implements it with `win32com.client.DispatchEx` +
+`pythoncom.CoInitialize`/`CoUninitialize`; `linux.py`/`null.py` raise
+`UnsupportedCapability`) rather than living directly in `tools/documents.py`
+— keeping the grep gate (invariant 4) clean. The LibreOffice `soffice` path
+stays directly in `tools/documents.py` since checking for a binary on PATH
+isn't OS-specific branching.
+
+### Pillow: fixed for real, not suppressed
+Per explicit instruction: Pillow was already implicitly sanctioned by
+Section 3 ("pystray + pillow # tray icon", Windows-only) but missing from
+`pyproject.toml`. Added it properly (`pillow; sys_platform == 'win32'`),
+moved the `PIL.ImageGrab` import to module level in `windows.py`, and
+removed the `type: ignore[import-not-found]` that was papering over the
+missing declaration. `capabilities()` no longer needs a runtime
+`try/except ImportError` probe for "screenshot" either, since Pillow is now
+guaranteed present on Windows.
+
+### `python-docx` / `reportlab` / `yt-dlp`: no stubs exist anywhere, unlike Pillow
+Unlike the Pillow case above, these three genuinely ship no type
+information and no `types-*` stub package exists to install — there is no
+equivalent "real fix." Scoped via the standard mypy mechanism for
+stub-less third-party libraries (`[[tool.mypy.overrides]]` with
+`ignore_missing_imports = true` for `docx.*`, `reportlab.*`, `yt_dlp.*` in
+`pyproject.toml`), rather than a `type: ignore` comment scattered across
+every call site. One unavoidable single-site ignore remains:
+`win32com.client.DispatchEx(...)  # type: ignore[no-untyped-call]` in
+`convert_docx_to_pdf` — COM dynamic dispatch has no static type to give it.
+
+### PDF test verification avoids adding a PDF-parsing dependency
+`tests/test_documents.py` checks `create_pdf`'s output "opens cleanly" by
+checking the `%PDF-`/`%%EOF` structural markers rather than parsing it with
+a library like `pypdf`, which is not in Section 3. `python-docx`'s own
+`Document(path)` re-open is used for the `.docx` case since that's already
+a pinned dependency doing real structural validation.
+
+### `open_app`'s default map has some bare exe names that need a per-machine path
+`edge`, `firefox`, `word`, `excel`, `vscode`, `terminal` default to bare exe
+names (`msedge.exe`, `winword.exe`, etc.) that rely on the OS resolving them
+via PATH, which several of these are not on by default. This mirrors
+`config.example.yaml`'s own "extend per machine" comment for `chrome`'s
+full path — not a bug, just a caveat worth stating plainly rather than
+pretending every machine's defaults will work unmodified.

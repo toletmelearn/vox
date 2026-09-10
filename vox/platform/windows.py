@@ -14,8 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+import pythoncom
+import win32com.client
 import win32con
 import win32gui
+from PIL import ImageGrab
 
 from vox.platform.base import UnsupportedCapability, WindowInfo
 
@@ -92,11 +95,9 @@ class WindowsAdapter:
 
     def screenshot(self, dest: Path) -> bool:
         try:
-            from PIL import ImageGrab  # type: ignore[import-not-found]
-
             ImageGrab.grab().save(dest)
             return True
-        except Exception:
+        except OSError:
             logger.warning("screenshot failed", exc_info=True)
             return False
 
@@ -113,6 +114,29 @@ class WindowsAdapter:
         except OSError:
             logger.warning("open_path failed for %r", path, exc_info=True)
             return False
+
+    def convert_docx_to_pdf(self, src: Path, dest_dir: Path) -> bool:
+        """Word COM automation (spec Section 6, documents.py fallback order).
+        Only reached when LibreOffice's `soffice` isn't on PATH."""
+        pythoncom.CoInitialize()
+        word = None
+        try:
+            word = win32com.client.DispatchEx("Word.Application")  # type: ignore[no-untyped-call]
+            word.Visible = False
+            doc = word.Documents.Open(str(src))
+            try:
+                dest = dest_dir / f"{src.stem}.pdf"
+                doc.SaveAs2(str(dest), FileFormat=17)
+            finally:
+                doc.Close(False)
+            return True
+        except Exception:
+            logger.warning("convert_docx_to_pdf failed for %r", src, exc_info=True)
+            return False
+        finally:
+            if word is not None:
+                word.Quit()
+            pythoncom.CoUninitialize()
 
     def os_build(self) -> str:
         build = sys.getwindowsversion().build
@@ -141,11 +165,7 @@ class WindowsAdapter:
             "lock_screen",
             "open_path",
             "notify",
+            "screenshot",
+            "convert_docx_to_pdf",
         }
-        try:
-            import PIL  # noqa: F401  # type: ignore[import-not-found]
-
-            caps.add("screenshot")
-        except ImportError:
-            pass
         return caps

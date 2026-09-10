@@ -108,9 +108,15 @@ class Settings(BaseModel):
     apps: dict[str, str] = Field(
         default_factory=lambda: {
             "chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+            "edge": "msedge.exe",
+            "firefox": "firefox.exe",
             "notepad": "notepad.exe",
             "explorer": "explorer.exe",
             "calculator": "calc.exe",
+            "word": "winword.exe",
+            "excel": "excel.exe",
+            "vscode": "code.exe",
+            "terminal": "wt.exe",
         }
     )
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

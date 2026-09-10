@@ -1,14 +1,8 @@
 """Wires config, logging, the platform adapter, and the guard/audit layer
-together. Owns the startup self-check and the --text entry path.
-
-`_stub_parse` is a deliberately tiny placeholder for Tier 0 — the real
-grammar (router/tier0_grammar.py) is a Phase 2 deliverable. It exists only so
-`run.py --text` can drive the full pipeline below STT per the Phase 1
-acceptance criteria. See DECISIONS.md."""
+together. Owns the startup self-check and the --text entry path."""
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import time
 from pathlib import Path
@@ -21,31 +15,13 @@ import vox.tools  # noqa: F401 - import populates REGISTRY
 from vox.config import Settings, get_settings
 from vox.logging_setup import setup_logging
 from vox.platform import get_adapter
+from vox.router import tier0_grammar
 from vox.router.base import ToolCall
 from vox.security.audit import get_audit_log
 from vox.security.jail import JailViolation, jail_roots
 from vox.tools.registry import REGISTRY, ToolResult
 
 logger = logging.getLogger("vox.app")
-
-_CREATE_FOLDER_RE = re.compile(
-    r"^(?:please\s+|can you\s+|just\s+)*(?:make|create|new)\s+(?:a\s+)?folder\s+"
-    r"(?:called|named)?\s*(?P<name>.+?)"
-    r"(?:\s+(?:on|in)\s+(?P<parent>desktop|documents|downloads|workdir))?$",
-    re.IGNORECASE,
-)
-_TIME_RE = re.compile(r"^(?:what'?s the |tell me the )?time(?: now)?$", re.IGNORECASE)
-
-
-def _stub_parse(text: str) -> ToolCall | None:
-    cleaned = text.strip().rstrip(" .!?")
-    match = _CREATE_FOLDER_RE.match(cleaned)
-    if match:
-        parent = (match.group("parent") or "desktop").lower()
-        return ToolCall(name="create_folder", args={"name": match.group("name").strip(), "parent": parent})
-    if _TIME_RE.match(cleaned):
-        return ToolCall(name="get_time", args={})
-    return None
 
 
 def execute_tool_call(call: ToolCall, *, transcript: str, tier: str = "text") -> ToolResult:
@@ -88,10 +64,15 @@ def execute_tool_call(call: ToolCall, *, transcript: str, tier: str = "text") ->
 
 
 def handle_text(text: str) -> ToolResult:
-    call = _stub_parse(text)
-    if call is None:
+    """Escalation logic (spec Section 7): Tier 0 first; Tier 1/2 land in
+    Phase 4, so anything Tier 0 doesn't resolve is a plain "didn't
+    understand" for now."""
+    route_result = tier0_grammar.route(text)
+    if route_result.clarification is not None:
+        return ToolResult(ok=False, speech=route_result.clarification)
+    if route_result.call is None:
         return ToolResult(ok=False, speech="I didn't understand that.")
-    return execute_tool_call(call, transcript=text, tier="text")
+    return execute_tool_call(route_result.call, transcript=text, tier=route_result.tier)
 
 
 def run_self_check(settings: Settings) -> None:

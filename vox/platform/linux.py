@@ -100,6 +100,11 @@ class LinuxAdapter:
             return subprocess.run(["xdg-open", str(path)], check=False).returncode == 0
         raise UnsupportedCapability("open_path needs xdg-open on PATH")
 
+    def convert_docx_to_pdf(self, src: Path, dest_dir: Path) -> bool:
+        # LibreOffice (checked directly via `soffice` in tools/documents.py)
+        # is the only supported path on Linux; there is no COM equivalent.
+        raise UnsupportedCapability("convert_docx_to_pdf needs LibreOffice's soffice")
+
     def os_build(self) -> str:
         return f"Linux {platform.release()} ({'X11' if _is_x11() else 'Wayland'})"
 

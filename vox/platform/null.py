@@ -48,6 +48,9 @@ class NullAdapter:
     def open_path(self, path: Path) -> bool:
         raise UnsupportedCapability("open_path is not available")
 
+    def convert_docx_to_pdf(self, src: Path, dest_dir: Path) -> bool:
+        raise UnsupportedCapability("convert_docx_to_pdf is not available")
+
     def os_build(self) -> str:
         return "unknown"
 

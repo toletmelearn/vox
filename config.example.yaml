@@ -63,10 +63,17 @@ tier2:
 
 apps:
   chrome: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  edge: "msedge.exe"
+  firefox: "firefox.exe"
   notepad: "notepad.exe"
   explorer: "explorer.exe"
   calculator: "calc.exe"
-  # ... extend per machine
+  word: "winword.exe"
+  excel: "excel.exe"
+  vscode: "code.exe"
+  terminal: "wt.exe"
+  # ... extend per machine. Bare exe names rely on the app already being on
+  # PATH; if "open word" doesn't work on your machine, put the full path here.
 
 logging:
   level: "INFO"
