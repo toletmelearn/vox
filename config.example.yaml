@@ -1,0 +1,73 @@
+hotkeys:
+  voice: "ctrl+alt+space"      # hold to talk
+  text:  "ctrl+alt+k"          # tap to open the command bar
+
+paths:
+  desktop: "~/Desktop"
+  documents: "~/Documents"
+  downloads: "~/Downloads"
+  workdir: "~/vox-workspace"
+  state_dir: "~/.vox"          # everything the agent owns lives here
+
+memory:
+  context_ttl_minutes: 15
+  recent_turns: 6
+  keep_artifact_copies: true
+  store_transcripts: true
+  store_message_bodies: false
+  transcript_retention_days: 90
+
+resolver:
+  prefer_native_app: true
+  reuse_open_window: true
+  install_cache_ttl_hours: 24
+  preferred_browser: null      # null = system default; else a key from `apps`
+
+messaging:
+  whatsapp_auto_send: false    # DO NOT enable. See Section 6B of the spec.
+  contact_match_cutoff: 0.8
+
+security:
+  jail_roots: ["~/Desktop", "~/Documents", "~/Downloads", "~/vox-workspace"]
+  max_download_mb: 500
+  blocked_hosts: []
+  confirm_destructive: true
+  undo_window_s: 4
+
+stt:
+  model: "small"            # base | small | medium
+  device: "cpu"             # cpu | cuda
+  compute_type: "int8"
+  language: null            # null = autodetect. Leave null for Hinglish.
+  hindi_aliases: true       # enable romanised Hindi verbs in the Tier 0 grammar
+  min_confidence: 0.55
+
+tts:
+  enabled: true
+  voice: "en_US-amy-medium"
+  rate: 1.0
+
+tier1:
+  enabled: true
+  provider: "ollama"
+  model: "qwen3:8b"
+  thinking: false
+  timeout_s: 12
+  min_confidence: 0.6
+
+tier2:
+  enabled: false
+  provider: "anthropic"
+  model: "claude-haiku-4-5-20251001"
+  # API key read from ANTHROPIC_API_KEY env var only
+
+apps:
+  chrome: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  notepad: "notepad.exe"
+  explorer: "explorer.exe"
+  calculator: "calc.exe"
+  # ... extend per machine
+
+logging:
+  level: "INFO"
+  file: "~/.vox/vox.log"
