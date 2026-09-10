@@ -104,8 +104,8 @@ Install with `uv` if available, else `pip` into a venv.
 ```
 sounddevice          # mic capture
 numpy
-faster-whisper       # STT (CTranslate2 Whisper)
-silero-vad           # voice activity detection (torch hub or pip pkg)
+faster-whisper       # STT (CTranslate2 Whisper). Also pulls in onnxruntime.
+onnxruntime          # already a faster-whisper dependency; reused for VAD
 piper-tts            # local TTS
 pynput               # global hotkey
 pydantic>=2          # tool arg schemas + validation
@@ -146,6 +146,23 @@ anthropic            # only used if config.tier2.enabled = true
 pytest
 pytest-mock
 ```
+
+### Verified environment (do not re-litigate)
+
+Confirmed working on **Windows 10, Python 3.14.3**, all wheels present for cp314:
+`pywin32-312`, `ctranslate2-4.8.2`, `onnxruntime-1.29.0`, `av-18.1.0`, `tokenizers-0.23.2`, `numpy-2.5.3`.
+Build against Python 3.14. Do not downgrade.
+
+### VAD — use ONNX, not torch
+
+**Do not install `torch`.** Silero VAD ships an ONNX model, and `onnxruntime` is already
+a transitive dependency of `faster-whisper`. Load the Silero ONNX model directly through
+`onnxruntime.InferenceSession`.
+
+Rationale: `torch` is roughly 2 GB and would dominate the installer size for one small
+VAD model. If a `silero-vad` pip package is used, it must be configured for the ONNX
+backend with no torch import. If any code path imports `torch`, that is a bug — add a
+test asserting `"torch" not in sys.modules` after `vox.audio.vad` is imported.
 
 ---
 
