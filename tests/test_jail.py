@@ -61,3 +61,25 @@ def test_unknown_parent_keyword_is_rejected(jail_settings):
 def test_relative_path_without_parent_is_rejected(jail_settings):
     with pytest.raises(JailViolation):
         resolve_in_jail("relative/no/parent/given")
+
+
+def test_oserror_during_resolve_is_treated_as_jail_violation(jail_settings, mocker):
+    """Regression test: Path.resolve() can raise OSError for an unreachable
+    UNC path instead of just normalising the string (observed on this
+    machine with \\\\server\\share depending on network adapter state,
+    intermittently making test_unc_path_is_rejected fail with an uncaught
+    OSError). Reproduced deterministically here via a mock rather than
+    relying on real network state."""
+    original_resolve = Path.resolve
+
+    def flaky_resolve(self: Path, strict: bool = False) -> Path:
+        # Only the path under test raises — jail_roots()'s own internal
+        # .resolve() calls must behave normally, or this test would fail
+        # for the wrong reason.
+        if "System32" in str(self):
+            raise OSError("network name no longer available")
+        return original_resolve(self, strict=strict)
+
+    mocker.patch("pathlib.Path.resolve", flaky_resolve)
+    with pytest.raises(JailViolation):
+        resolve_in_jail("C:\\Windows\\System32")

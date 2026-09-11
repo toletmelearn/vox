@@ -9,5 +9,9 @@ config.yaml
 *.db
 *.db-journal
 .env
-models/
+# Runtime model caches (state_dir/cache/models/, outside the repo by
+# design) — NOT vox/audio/models/, which holds the vendored Silero VAD
+# ONNX file that must be committed. Anchored to repo root so it can't
+# accidentally match that nested directory.
+/models/
 /.vox/

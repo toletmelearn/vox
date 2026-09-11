@@ -29,6 +29,43 @@ _BROWSER_PROCESSES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "o
 # https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent
 _PF_AVX2_INSTRUCTIONS_AVAILABLE = 40
 
+# https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-registerhotkey
+_MOD_ALT = 0x0001
+_MOD_CONTROL = 0x0002
+_MOD_SHIFT = 0x0004
+_MOD_WIN = 0x0008
+_MOD_NOREPEAT = 0x4000
+_PROBE_HOTKEY_ID = 0xBEEF  # arbitrary; only ever held for the duration of one probe call
+
+_VK_NAMED = {"space": 0x20, "esc": 0x1B, "escape": 0x1B, "tab": 0x09, "enter": 0x0D}
+
+
+def _parse_win_chord(chord: str) -> tuple[int, int]:
+    """Parse 'ctrl+shift+space' into (modifier flags, virtual-key code) for
+    RegisterHotKey. Separate from capture.py's parse_chord (pynput
+    Key/KeyCode groups) — this one speaks the Win32 API's vocabulary."""
+    mods = 0
+    vk: int | None = None
+    for raw_token in chord.lower().split("+"):
+        token = raw_token.strip()
+        if token == "ctrl":
+            mods |= _MOD_CONTROL
+        elif token == "alt":
+            mods |= _MOD_ALT
+        elif token == "shift":
+            mods |= _MOD_SHIFT
+        elif token in ("win", "cmd"):
+            mods |= _MOD_WIN
+        elif token in _VK_NAMED:
+            vk = _VK_NAMED[token]
+        elif len(token) == 1:
+            vk = ord(token.upper())
+        else:
+            raise ValueError(f"unrecognised hotkey token: {token!r}")
+    if vk is None:
+        raise ValueError(f"chord has no non-modifier key: {chord!r}")
+    return mods, vk
+
 
 class WindowsAdapter:
     name = "windows"
@@ -137,6 +174,29 @@ class WindowsAdapter:
             if word is not None:
                 word.Quit()
             pythoncom.CoUninitialize()
+
+    def verify_hotkey_available(self, chord: str) -> bool:
+        """Real OS-level check (spec Section 6E: "pynput registration can
+        fail silently... verify it took"). RegisterHotKey claims the chord
+        exclusively at the OS level; if another application already holds
+        it (confirmed on this dev machine: the Claude desktop app intercepts
+        ctrl+alt+space before vox's listener ever sees it), this fails
+        immediately and loudly instead of us silently assuming success.
+        Registers and immediately unregisters — this is a probe, not the
+        runtime mechanism (push-to-talk hold/release still comes from the
+        low-level pynput Listener in audio/capture.py, since WM_HOTKEY has
+        no hold/release semantics)."""
+        try:
+            mods, vk = _parse_win_chord(chord)
+        except ValueError:
+            logger.warning("could not parse hotkey %r for verification", chord, exc_info=True)
+            return False
+
+        user32 = ctypes.windll.user32
+        ok = bool(user32.RegisterHotKey(None, _PROBE_HOTKEY_ID, mods | _MOD_NOREPEAT, vk))
+        if ok:
+            user32.UnregisterHotKey(None, _PROBE_HOTKEY_ID)
+        return ok
 
     def os_build(self) -> str:
         build = sys.getwindowsversion().build

@@ -6,7 +6,9 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from typing import Protocol
 
+import numpy as np
 import psutil
 from rich.console import Console
 from rich.table import Table
@@ -15,8 +17,9 @@ import vox.tools  # noqa: F401 - import populates REGISTRY
 from vox.config import Settings, get_settings
 from vox.logging_setup import setup_logging
 from vox.platform import get_adapter
+from vox.platform.base import UnsupportedCapability
 from vox.router import tier0_grammar
-from vox.router.base import ToolCall
+from vox.router.base import ToolCall, Transcript
 from vox.security.audit import get_audit_log
 from vox.security.jail import JailViolation, jail_roots
 from vox.tools.registry import REGISTRY, ToolResult
@@ -24,7 +27,9 @@ from vox.tools.registry import REGISTRY, ToolResult
 logger = logging.getLogger("vox.app")
 
 
-def execute_tool_call(call: ToolCall, *, transcript: str, tier: str = "text") -> ToolResult:
+def execute_tool_call(
+    call: ToolCall, *, transcript: str, tier: str = "text", stt_confidence: float = 1.0
+) -> ToolResult:
     """Guard layer: write the audit row before execution, run the tool
     through jail validation, update the row after. JailViolation is the only
     exception allowed to propagate out of a tool (spec Section 12); it is
@@ -40,6 +45,7 @@ def execute_tool_call(call: ToolCall, *, transcript: str, tier: str = "text") ->
         args=call.args,
         risk=registered.risk,
         tier=tier,
+        stt_confidence=stt_confidence,
     )
     start = time.monotonic()
     try:
@@ -63,16 +69,41 @@ def execute_tool_call(call: ToolCall, *, transcript: str, tier: str = "text") ->
     return result
 
 
-def handle_text(text: str) -> ToolResult:
-    """Escalation logic (spec Section 7): Tier 0 first; Tier 1/2 land in
-    Phase 4, so anything Tier 0 doesn't resolve is a plain "didn't
-    understand" for now."""
-    route_result = tier0_grammar.route(text)
+def route_and_execute(transcript: Transcript) -> ToolResult:
+    """The shared pipeline both input modes feed (spec Section 6D: "Both
+    produce a Transcript... do not fork the pipeline"). Escalation logic
+    (spec Section 7): a low-confidence transcript is refused before
+    routing; Tier 0 first; Tier 1/2 land in Phase 4, so anything Tier 0
+    doesn't resolve is a plain "didn't understand" for now."""
+    settings = get_settings()
+    if transcript.confidence < settings.stt.min_confidence:
+        return ToolResult(ok=False, speech="Sorry, I didn't catch that.")
+
+    route_result = tier0_grammar.route(transcript.text)
     if route_result.clarification is not None:
         return ToolResult(ok=False, speech=route_result.clarification)
     if route_result.call is None:
         return ToolResult(ok=False, speech="I didn't understand that.")
-    return execute_tool_call(route_result.call, transcript=text, tier=route_result.tier)
+
+    return execute_tool_call(
+        route_result.call,
+        transcript=transcript.text,
+        tier=route_result.tier,
+        stt_confidence=transcript.confidence,
+    )
+
+
+def handle_text(text: str) -> ToolResult:
+    """Text input path (spec Section 6D): confidence fixed at 1.0, feeds the
+    same pipeline as voice."""
+    transcript = Transcript(text=text, confidence=1.0, language="unknown", duration_s=0.0)
+    return route_and_execute(transcript)
+
+
+def handle_transcript(transcript: Transcript) -> ToolResult:
+    """Voice input path: transcript.confidence comes from Whisper's
+    avg_logprob."""
+    return route_and_execute(transcript)
 
 
 def run_self_check(settings: Settings) -> None:
@@ -100,6 +131,14 @@ def run_self_check(settings: Settings) -> None:
     free_gb = shutil.disk_usage(workdir).free / (1024**3)
     table.add_row("Free disk (workdir volume)", f"{free_gb:.1f} GB")
 
+    for label, chord in (("voice", settings.hotkeys.voice), ("text", settings.hotkeys.text)):
+        try:
+            hotkey_ok = adapter.verify_hotkey_available(chord)
+            status = "[green]available[/]" if hotkey_ok else "[red]already claimed by another app[/]"
+        except UnsupportedCapability:
+            status = "[yellow]cannot verify on this platform[/]"
+        table.add_row(f"hotkey: {label} ({chord})", status)
+
     all_caps = {
         "list_windows",
         "focus_window",
@@ -126,3 +165,71 @@ def bootstrap() -> Settings:
     setup_logging(settings)
     run_self_check(settings)
     return settings
+
+
+class VoiceCapture(Protocol):
+    def stop(self) -> None: ...
+
+
+def start_voice_mode(settings: Settings) -> VoiceCapture | None:
+    """Wires the voice hotkey to the same pipeline as --text (spec Section
+    10, Phase 3). Audio-stack imports are deferred to here, not module
+    scope, so a missing/broken mic, PortAudio, or model download never
+    breaks the --text path (invariant 9: degrade, never brick; invariant 10:
+    text is an equal path, not a fallback). Returns the running capture
+    object (call .stop() to release the hotkey), or None if voice mode
+    could not start."""
+    try:
+        from vox.audio.capture import HotkeyCapture
+        from vox.audio.tts import speak
+        from vox.audio.vad import has_speech, trim_silence
+        from vox.stt.whisper import transcribe
+    except ImportError:
+        logger.warning("Audio stack unavailable; voice mode disabled.", exc_info=True)
+        return None
+
+    # Real OS-level check, not an assumption (spec Section 6E: "pynput
+    # registration can fail silently... verify it took"). Confirmed on this
+    # dev machine: ctrl+alt+space was silently intercepted by another
+    # application before vox's listener ever saw a key event.
+    try:
+        available = get_adapter().verify_hotkey_available(settings.hotkeys.voice)
+    except UnsupportedCapability:
+        available = None  # can't verify on this platform; proceed optimistically
+    if available is False:
+        logger.error(
+            "Hotkey %r is already claimed by another application on this "
+            "system and could not be registered for vox. Voice mode was "
+            "NOT started. Change hotkeys.voice in config.yaml to a "
+            "different chord and restart.",
+            settings.hotkeys.voice,
+        )
+        return None
+
+    def _on_recorded(pcm: np.ndarray) -> None:
+        logger.info("Recorded %.2fs of audio.", len(pcm) / 16000)
+        trimmed = trim_silence(pcm)
+        if not has_speech(trimmed):
+            logger.info("No speech detected in recording; skipping routing.")
+            return
+        logger.info("VAD kept %.2fs after trimming.", len(trimmed) / 16000)
+        transcript = transcribe(trimmed)
+        logger.info(
+            "Transcript: %r (confidence=%.2f, language=%s)",
+            transcript.text,
+            transcript.confidence,
+            transcript.language,
+        )
+        result = handle_transcript(transcript)
+        logger.info("Result: ok=%s speech=%r", result.ok, result.speech)
+        speak(result.speech)
+
+    try:
+        capture = HotkeyCapture(settings.hotkeys.voice, on_recorded=_on_recorded)
+        capture.start()
+    except Exception:
+        logger.warning("Failed to start the voice hotkey listener.", exc_info=True)
+        return None
+
+    logger.info("Voice mode listening on hotkey %r (hold to talk).", settings.hotkeys.voice)
+    return capture

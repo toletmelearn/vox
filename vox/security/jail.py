@@ -86,7 +86,14 @@ def resolve_in_jail(user_path: str, parent_key: str | None = None) -> Path:
                 f"relative path given without a parent keyword: {user_path!r}"
             )
 
-    candidate = raw.resolve(strict=False)
+    try:
+        candidate = raw.resolve(strict=False)
+    except OSError as exc:
+        # A UNC path to an unreachable host can make Path.resolve() attempt
+        # live network resolution and raise, instead of just normalising
+        # the string (observed with \\server\share on Windows). Any path we
+        # can't safely resolve is rejected, not silently let through.
+        raise JailViolation(f"could not resolve path: {user_path!r} ({exc})") from exc
 
     if not _is_within(candidate, roots):
         raise JailViolation(f"path escapes the jail: {user_path!r} -> {candidate}")

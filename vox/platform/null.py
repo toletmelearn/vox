@@ -51,6 +51,9 @@ class NullAdapter:
     def convert_docx_to_pdf(self, src: Path, dest_dir: Path) -> bool:
         raise UnsupportedCapability("convert_docx_to_pdf is not available")
 
+    def verify_hotkey_available(self, chord: str) -> bool:
+        raise UnsupportedCapability("verify_hotkey_available is not available")
+
     def os_build(self) -> str:
         return "unknown"
 

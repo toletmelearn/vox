@@ -13,6 +13,12 @@ dependencies = [
     "yt-dlp",
     "python-docx",
     "reportlab",
+    "sounddevice",
+    "numpy",
+    "faster-whisper",
+    "onnxruntime",
+    "piper-tts",
+    "pynput",
     "pywin32; sys_platform == 'win32'",
     "pillow; sys_platform == 'win32'",
 ]
@@ -27,18 +33,26 @@ dev = [
     "types-pywin32",
     "types-Send2Trash",
     "types-requests",
+    "types-pynput",
 ]
 
 [tool.mypy]
-python_version = "3.11"
+# numpy's stubs use 3.12+ `type` statement syntax; this project is pinned to
+# build against 3.14 specifically (spec Section 3: "Build against Python
+# 3.14. Do not downgrade"), so check against the real interpreter version
+# rather than the requires-python floor of 3.11.
+python_version = "3.14"
 strict = true
 
-# python-docx, reportlab and yt-dlp ship no type stubs anywhere (unlike the
-# pillow case, there is no real fix to install here) — scoped at the module
-# boundary via the standard mypy mechanism for stub-less third-party
-# libraries, rather than a type: ignore on every call site. See DECISIONS.md.
+# python-docx, reportlab, yt-dlp, onnxruntime, sounddevice, faster_whisper
+# and piper ship no type stubs anywhere and no types-* package exists for
+# any of them (verified: `pip index versions types-onnxruntime` etc. all
+# 404) — scoped at the module boundary via the standard mypy mechanism for
+# stub-less third-party libraries, rather than a type: ignore on every call
+# site. Contrast pynput and Pillow above, which do have real fixes. See
+# DECISIONS.md.
 [[tool.mypy.overrides]]
-module = ["docx.*", "reportlab.*", "yt_dlp.*"]
+module = ["docx.*", "reportlab.*", "yt_dlp.*", "onnxruntime.*", "sounddevice.*", "faster_whisper.*", "piper.*"]
 ignore_missing_imports = true
 
 [build-system]

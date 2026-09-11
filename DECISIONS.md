@@ -169,3 +169,272 @@ via PATH, which several of these are not on by default. This mirrors
 `config.example.yaml`'s own "extend per machine" comment for `chrome`'s
 full path — not a bug, just a caveat worth stating plainly rather than
 pretending every machine's defaults will work unmodified.
+
+## Phase 3
+
+### Model/package downloads redirected off the system drive
+This dev machine has ~3 GB free on C: (98% used); Phase 3's packages plus
+first-run model downloads (~500 MB Whisper `small`/int8 + ~60-100 MB Piper
+voice) risked filling it. Fixed properly, not worked around:
+- `config.yaml` (real, gitignored, this machine only) sets
+  `paths.state_dir: "D:/dev/vox-state"`.
+- `stt/whisper.py::_redirect_hf_cache()` sets `HF_HOME` from `state_dir` at
+  import time (before `faster_whisper`/`huggingface_hub` is imported),
+  unless the environment already set it — so the app enforces this itself
+  at runtime regardless of shell state.
+- `audio/tts.py` passes `download_dir` explicitly to Piper's downloader
+  (which uses plain `urlopen`, not `huggingface_hub`, so no env var applies
+  there).
+- `PIP_CACHE_DIR` was set for the `pip install` step itself (installer-time
+  only, can't be fixed from inside the app). Documented in `README.md` and
+  `config.example.yaml` so this isn't a one-off fix that gets lost.
+
+### Silero VAD: vendored ONNX file, not the `silero-vad` PyPI package
+Verified empirically (`pip install silero-vad --dry-run`) that the
+`silero-vad` package hard-depends on `torch>=1.12.0` and `torchaudio>=0.12.0`
+in its own `install_requires` — installing it would pull torch regardless of
+any ONNX-backend configuration flag, directly violating spec Section 3's "do
+not install torch." Instead: downloaded the wheel with `pip download
+--no-deps` (no install, so torch's dependency graph is never resolved),
+extracted `silero_vad/data/silero_vad.onnx` (2.3 MB) from it directly, and
+vendored that file at `vox/audio/models/silero_vad.onnx` with its MIT
+license text alongside it (`SILERO_VAD_LICENSE.txt`, license permits
+redistribution with attribution). `SileroVAD` loads it via
+`onnxruntime.InferenceSession` directly, exactly as spec Section 3 literally
+instructs ("Load the Silero ONNX model directly through
+onnxruntime.InferenceSession"). No new pip dependency added; `torch` is
+never on the dependency graph, not just unimported at runtime. Verified via
+`test_torch_is_never_imported_by_vad`, per the spec's explicit instruction.
+
+### VAD bug found and fixed via live acceptance testing: missing the 64-sample context prepend
+What was first written up here as "an open risk — VAD doesn't trigger on
+synthetic TTS voices, needs real-speech verification" turned out, once the
+user actually held the hotkey and spoke, to be **a real integration bug**
+that also affected real human speech, not a synthetic-voice characteristic.
+
+Symptom: `speech_probability()` returned near-zero (max ~0.003, vs. the 0.5
+threshold) for *every* input regardless of source — Piper TTS, Windows
+SAPI, and real recorded human speech (RMS 0.10-0.13, clearly present
+signal) all produced the identical flat near-zero pattern. Root cause,
+found by sweeping frame sizes against a real recorded clip: Silero v5's
+streaming convention requires a **64-sample lookback context from the tail
+of the previous chunk, prepended to each new 512-sample chunk** — so the
+model actually needs to receive 576 samples per call (`context + frame`),
+not 512. This isn't visible in the exported graph's declared shape
+(`[None, None]` — any length "runs" without erroring), so a shape check
+alone can't catch it; it's a modeling convention, not an API contract.
+Confirmed by feeding the same real recording through both ways: without
+context, max probability 0.003 across 136 frames; with the 64-sample
+context prepended and carried between calls, probabilities reached 0.999,
+with 96 of 136 frames correctly crossing 0.5 — and the frames that did
+cross tracked exactly where the person was speaking (low at the clip's
+edges, nearly 1.0 in the middle).
+
+Fixed in `SileroVAD`: added a `_context` buffer (`CONTEXT_SAMPLES = 64`),
+initialized to zeros in `reset()`, prepended to `frame` before each
+`session.run()` call, and updated from the tail of `frame` after. Added
+`test_real_speech_fixture_is_detected_and_trimmed` (a real speech fixture,
+Windows SAPI generated offline — not the developer's voice, no network
+call) and `test_context_is_carried_between_calls` as regression tests.
+Verified against the actual recording that failed live: `has_speech`
+flipped from `False` to `True`, correctly trimming 4.37s down to 4.13s.
+
+This whole investigation — including the earlier wrong "synthetic voices
+specifically" theory — is left in git history rather than scrubbed, because
+it's the honest record of how the bug was actually found: by an automated
+agent's synthetic testing raising a plausible-but-wrong hypothesis, and a
+human's real hotkey-and-voice test proving it wrong and pointing at the
+real cause. The lesson generalizes: a component that behaves identically
+across every synthetic test case and only breaks against real input is a
+reason to suspect the integration, not just note it as an unverified risk.
+
+### Whisper CPU latency exceeds the spec's 2s target in this environment
+Spec Section 10 Phase 3 acceptance: "releasing transcribes within 2s for a
+3-second clip on small/int8/CPU." Measured on this machine: ~11-13s for a
+~4s clip (text was accurate; only latency is the concern). Investigated:
+- `beam_size=1` vs. the library default `beam_size=5` made no measurable
+  difference (11.42s vs. 11.50s) — rules out beam search as the bottleneck.
+- Explicit `cpu_threads=os.cpu_count()` (4 here) made no measurable
+  difference either, but is still correct to set and was added to
+  `_get_model()` regardless (harmless, plausibly helps on other hardware).
+- This points to the fixed-cost 30-second-padded encoder forward pass
+  (Whisper's architecture always processes a full 30s mel-spectrogram
+  window per call, independent of actual speech length) as the likely
+  dominant cost, not anything tunable from the transcribe() call site.
+
+Cannot rule out that this tool-execution sandbox throttles CPU differently
+from what the OS-level self-check reports (AVX2 present, 4 cores, 15.9 GB
+RAM) — i.e. this may not reflect real end-user hardware. Flagging as an
+open performance risk to verify on real (non-sandboxed) hardware before
+relying on the 2s figure, rather than either declaring it fixed or silently
+ignoring the gap.
+
+### Real hotkey collision found via live testing: ctrl+alt+space was claimed by another app
+The default voice hotkey (`ctrl+alt+space`, per spec's `config.example.yaml`)
+was silently intercepted by another application on the test machine (the
+Claude desktop app itself) before vox's `pynput` listener ever received a
+key event — confirmed by the user pressing it and getting a response from
+that other app instead. This is exactly the failure mode spec Section 6E
+describes ("pynput registration can fail silently... Required behaviour:
+after registering, verify it took... show a visible message... surface it
+in the startup self-check table"), which the Phase 3 `HotkeyCapture` (a
+passive low-level listener, not an OS-level exclusive registration) had no
+way to detect on its own.
+
+Fixed by adding a *real* verification step, not an assumption:
+`PlatformAdapter.verify_hotkey_available(chord)`, implemented on Windows via
+`RegisterHotKey`/`UnregisterHotKey` (the actual OS-level exclusivity
+mechanism) — register the chord, immediately unregister (this is a probe,
+not the runtime mechanism; `WM_HOTKEY` has no hold/release semantics, so the
+low-level `pynput` `Listener` is still what drives push-to-talk). Verified
+empirically: `verify_hotkey_available("ctrl+alt+space")` → `False` (real,
+reproducible OS-level confirmation), `"ctrl+shift+space")` → `True`.
+`start_voice_mode` now refuses to start (with a clear, visible log message)
+if the configured chord is claimed, and `run_self_check` shows a row per
+configured hotkey. Linux has no implementation yet (`XGrabKey` would be the
+equivalent; deferred, not observed as a problem there) — callers treat
+`UnsupportedCapability` as "can't verify, proceed" rather than a hard
+failure, so this degrades gracefully on platforms without the check.
+Switched the default in this machine's `config.yaml` to
+`ctrl+shift+space`/`ctrl+shift+k`.
+
+### Real bug found via live testing: blocking work on pynput's hook-callback thread
+`HotkeyCapture._on_press`/`_on_release` originally called `Recorder.start()`/
+`stop()` (which opens/closes a `sounddevice.InputStream`) and — on
+release — the full `on_recorded` callback (VAD + Whisper + TTS, measured at
+several seconds to over ten) directly inline, on the same thread pynput's
+low-level keyboard hook invokes them on. Windows expects a low-level hook
+to return near-instantly; a slow hook callback can make Windows silently
+delay or drop subsequent events for it. This was a real suspect for the
+intermittent 0.00s-recorded results seen during live testing (though not
+the only cause — see the next entry). Fixed: `_on_press`/`_on_release` now
+only touch the cheap `ChordTracker` and enqueue work onto a dedicated
+worker thread (a `queue.Queue`, processed strictly in order so `start`
+always finishes before `stop` is handled), keeping the hook thread's own
+callbacks fast regardless of how long recording/transcription takes.
+Regression test: `test_hotkey_capture_release_returns_fast_even_if_on_recorded_is_slow`
+asserts `_on_release` returns in under 50ms even when `on_recorded` sleeps
+for 300ms.
+
+### Real finding via live testing: MME input device startup latency causes short holds to record nothing
+Live testing showed `sd.InputStream` construction+`.start()` taking up to
+~0.3s on this machine's default input device (an MME-hosted microphone —
+MME is Windows' legacy audio API, known for materially higher
+buffering/startup latency than WASAPI). Because `HotkeyCapture`'s worker
+processes `start` and `stop` strictly in order, any physical hold shorter
+than the stream's startup latency produces **zero** audio callbacks before
+teardown — confirmed with direct wall-clock instrumentation (a 0.192s
+physical hold against a 0.299s stream-start time, 0 callbacks). This is a
+real, measurable limitation, not user error: holds of roughly 1s+ reliably
+captured real audio (2.48s and 4.62s holds both produced real, correctly-
+detected speech once the VAD bug above was also fixed). Not addressed
+further in Phase 3 — selecting a lower-latency WASAPI device explicitly
+would help, but device selection needs care to stay cross-platform (Linux's
+hostapi names differ) and is left as a follow-up rather than a Phase 3
+requirement, since the spec's acceptance criterion is about a 3-second
+clip, comfortably above this latency floor.
+
+### Kill switch (Esc) is out of scope for Phase 3
+`config.hotkeys.abort` ("esc") is defined in Phase 1's config schema, but
+spec Section 10 lists "kill switch" as an explicit Phase 5 deliverable
+(`security/confirm.py`, tray, kill switch, startup self-check all land
+together). Phase 3 only builds push-to-talk mic capture; no global Esc
+handling or `threading.Event` abort wiring was added yet.
+
+### Hotkey hold/release cannot be tested by holding a real key
+`ChordTracker` (the press/release/is_held state machine) and `HotkeyCapture`
+(wiring to a real `pynput.keyboard.Listener`) are unit-tested by injecting
+synthetic key events — no automated agent session can physically hold a
+keyboard chord. `Recorder` is tested with a mocked `sounddevice.InputStream`.
+The literal "hold Ctrl+Alt+Space and speak" acceptance flow was not run
+end-to-end with a human in this session; every component it's built from
+was verified individually (mocked hotkey state machine + mocked mic
+capture; real VAD; real Whisper on real synthesized audio; real TTS
+playback through actual speakers, confirmed via loopback recording).
+
+### `mypy` config: `python_version` bumped to 3.14, more stub-less libraries added to the override list
+`numpy`'s bundled stubs use Python 3.12+ `type` statement syntax, which
+broke mypy when `python_version` was still 3.11 (the `requires-python`
+floor). Bumped to 3.14 — what spec Section 3 says this project is actually
+built and pinned against ("Build against Python 3.14. Do not downgrade"),
+not the compatibility floor. `types-pynput` exists and was added as a real
+fix (same category as `types-psutil` etc. from Phase 1). Verified no stub
+packages exist for `onnxruntime`, `sounddevice`, or `faster_whisper`
+(`pip index versions types-<pkg>` all 404) — added to the same
+`ignore_missing_imports` override block as `docx`/`reportlab`/`yt_dlp` from
+Phase 2, for the same reason.
+
+### `resolve_in_jail` now catches `OSError` from `Path.resolve()`, not just path-escape cases
+Found during this phase (not introduced by it): `Path.resolve()` on Windows
+can raise `OSError`/`FileNotFoundError` for a UNC path when the OS attempts
+live network resolution and the host is unreachable, instead of just
+normalising the string — this was flaky depending on network adapter state
+and briefly broke `test_unc_path_is_rejected`. Fixed by wrapping the
+`resolve()` call in `resolve_in_jail` and re-raising as `JailViolation`:
+any path that can't be safely resolved is rejected, which is the correct
+behaviour for a UNC path anyway. Added a deterministic regression test
+(`test_oserror_during_resolve_is_treated_as_jail_violation`, mocked rather
+than depending on real network state) so this doesn't silently regress.
+
+### `Transcript.confidence` heuristic for text vs. voice, and the pipeline is now unified
+Spec Section 6D: "Both [voice and text] produce a Transcript... Everything
+downstream... is identical. Do not fork the pipeline." Phase 1/2's
+`handle_text` bypassed `Transcript` entirely and called the grammar router
+directly. Refactored so both `handle_text` and the new `handle_transcript`
+(voice) go through one shared `route_and_execute(transcript)`, matching the
+spec's explicit instruction not to fork. Text fixes `confidence=1.0` per
+Section 6D. Voice confidence is `1.0 + avg_logprob` clamped to `[0, 1]` — a
+documented heuristic (avg_logprob is a log-probability, roughly 0 for
+confident and more negative for uncertain), not a formula given by the
+spec.
+
+### Real finding via live testing: spec's `min_confidence: 0.55` default rejects valid real speech
+Once the VAD bug above was fixed, live testing hit a second real gate:
+"What is the time, what's the time?" was transcribed correctly by Whisper
+but refused with "Sorry, I didn't catch that" because
+`_logprob_to_confidence` scored it 0.46, below spec's `config.example.yaml`
+default of `stt.min_confidence: 0.55`. Observed real confidence scores on
+this machine's mic + Whisper `small`/int8 setup land in the 0.3-0.7 range
+for correctly-transcribed speech — never near 1.0 the way the 0.55 default
+implicitly assumes. Since `_logprob_to_confidence` is itself an undocumented
+heuristic mapping (see the entry above) rather than a formula the spec
+specifies, 0.55 was never validated against what this heuristic actually
+produces for real audio — it's an untested guess, not a calibrated
+threshold. Lowered `stt.min_confidence` to `0.35` in this machine's real
+`config.yaml` (not the shipped default in `config.py`/`config.example.yaml`,
+which still reflects the spec's literal number — changing the general
+default without broader validation across mics/hardware would be its own
+untested guess). Flagging for Phase 4/5: either recalibrate
+`_logprob_to_confidence` so its output range better matches the 0-1 scale
+`min_confidence` assumes, or pick a validated default threshold from
+real measurements across more than one machine.
+
+### Phase 3 acceptance: fully verified end-to-end with real hardware, not just believed fixed
+Everything above in this Phase 3 section reads as a sequence of bugs found
+during live testing rather than a clean build, and that's an accurate
+record, not a gap: the user held the real hotkey and spoke into the real
+microphone repeatedly across a debugging session, and each real failure
+(hotkey collision, VAD never triggering, a slow-hook-callback race, MME
+stream-startup latency, an uncalibrated confidence threshold) was root-
+caused against real captured audio and fixed, not patched around or
+declared "probably fine." The closing runs confirm the whole pipeline
+works as specified:
+
+- "Hi, can you miss me?" (confidence 0.36) and "Bye." (confidence 0.58) —
+  both transcribed accurately, correctly passed the confidence gate, and
+  correctly produced "I didn't understand that." (neither is a Tier 0
+  command — expected, not a bug; open-ended phrases are Tier 1's job,
+  Phase 4).
+- "What's the time" — heard, transcribed, routed to `get_time`, and the
+  correct answer was **spoken back** through real speakers.
+
+That last run exercises every stage the spec's Phase 3 acceptance criteria
+name: push-to-talk hold/release, VAD trimming real speech from real
+silence, Whisper transcription, the confidence gate, Tier 0 routing, tool
+execution, and spoken TTS confirmation — all with real audio, not mocks or
+synthetic substitutes. The one criterion still not met as specified is
+latency ("within 2s for a 3-second clip" — this machine measures ~11-13s);
+that remains open per the entry above and needs checking on non-sandboxed
+hardware. Holds under roughly 0.3-0.5s still record nothing due to MME
+stream-startup latency (also documented above) — a known, minor UX rough
+edge, not a correctness bug.

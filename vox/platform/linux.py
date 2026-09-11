@@ -105,6 +105,13 @@ class LinuxAdapter:
         # is the only supported path on Linux; there is no COM equivalent.
         raise UnsupportedCapability("convert_docx_to_pdf needs LibreOffice's soffice")
 
+    def verify_hotkey_available(self, chord: str) -> bool:
+        # X11's XGrabKey could implement a real probe; deferred (not
+        # observed as a problem on Linux yet, unlike the Windows case this
+        # method exists to catch). Callers must treat UnsupportedCapability
+        # as "can't verify" and proceed, not as a hard failure.
+        raise UnsupportedCapability("verify_hotkey_available needs XGrabKey (not implemented)")
+
     def os_build(self) -> str:
         return f"Linux {platform.release()} ({'X11' if _is_x11() else 'Wayland'})"
 

@@ -8,6 +8,13 @@ paths:
   downloads: "~/Downloads"
   workdir: "~/vox-workspace"
   state_dir: "~/.vox"          # everything the agent owns lives here
+  # state_dir holds audit.db, logs, and — from Phase 3 on — the Whisper and
+  # Piper model caches (roughly 1-2 GB combined). If your system drive is
+  # low on space, point this at another drive instead, e.g.:
+  #   state_dir: "D:/vox-state"
+  # Package installs and huggingface_hub's own model cache are separate
+  # from this and are controlled by the PIP_CACHE_DIR / HF_HOME environment
+  # variables at install/first-run time — see README.md.
 
 memory:
   context_ttl_minutes: 15
