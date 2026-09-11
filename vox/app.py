@@ -3,15 +3,11 @@ together. Owns the startup self-check and the --text entry path."""
 from __future__ import annotations
 
 import logging
-import shutil
 import time
-from pathlib import Path
-from typing import Protocol
+from collections.abc import Callable
+from typing import Literal, Protocol
 
 import numpy as np
-import psutil
-from rich.console import Console
-from rich.table import Table
 
 import vox.tools  # noqa: F401 - import populates REGISTRY
 from vox.config import Settings, get_settings
@@ -20,8 +16,10 @@ from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
 from vox.router import tier0_grammar, tier1_local
 from vox.router.base import RouteResult, ToolCall, Transcript
+from vox.security import confirm
 from vox.security.audit import get_audit_log
-from vox.security.jail import JailViolation, jail_roots
+from vox.security.jail import JailViolation
+from vox.selfcheck import run_self_check
 from vox.tools.registry import REGISTRY, ToolResult
 
 logger = logging.getLogger("vox.app")
@@ -47,6 +45,16 @@ def execute_tool_call(
         tier=tier,
         stt_confidence=stt_confidence,
     )
+
+    if registered.risk == "destructive":
+        # Block on a modal confirmation, default Cancel, never auto-confirmed
+        # (spec Section 8.4). The row is already written as 'pending' above,
+        # never edited-in-place before this point - only its terminal status
+        # changes here.
+        if not confirm.confirm_destructive(call.name, call.args):
+            audit.update_status(row_id, status="cancelled")
+            return ToolResult(ok=False, speech="Cancelled.")
+
     start = time.monotonic()
     try:
         validated = registered.args_model(**call.args)
@@ -66,6 +74,11 @@ def execute_tool_call(
         error=None if result.ok else result.detail,
         duration_ms=duration_ms,
     )
+
+    if registered.risk == "medium" and result.ok and result.artifact_path:
+        settings = get_settings()
+        confirm.arm_undo(call.name, result.artifact_path, settings.security.undo_window_s)
+
     return result
 
 
@@ -82,6 +95,8 @@ def route_and_execute(transcript: Transcript) -> ToolResult:
     "no match" from Tier 0 escalates. Tier 2 is not built until later, so
     anything Tier 1 can't resolve (or Tier 1 being unavailable) ends in
     "didn't understand" for now."""
+    confirm.get_kill_switch().clear()  # a new command always starts un-aborted
+
     settings = get_settings()
     if transcript.confidence < settings.stt.min_confidence:
         return ToolResult(ok=False, speech="Sorry, I didn't catch that.")
@@ -125,67 +140,6 @@ def handle_transcript(transcript: Transcript) -> ToolResult:
     return route_and_execute(transcript)
 
 
-def run_self_check(settings: Settings) -> None:
-    adapter = get_adapter()
-    console = Console()
-    table = Table(title="vox startup self-check")
-    table.add_column("Check")
-    table.add_column("Status")
-
-    for root in jail_roots():
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            ok = root.exists() and root.is_dir()
-        except OSError:
-            ok = False
-        table.add_row(f"jail root: {root}", "[green]ok[/]" if ok else "[red]missing/unwritable[/]")
-
-    table.add_row("OS", adapter.os_build())
-    table.add_row("AVX2", "[green]present[/]" if adapter.cpu_supports_avx2() else "[red]absent[/]")
-
-    ram_gb = psutil.virtual_memory().total / (1024**3)
-    table.add_row("RAM", f"{ram_gb:.1f} GB")
-
-    workdir = Path(settings.paths.workdir).expanduser()
-    free_gb = shutil.disk_usage(workdir).free / (1024**3)
-    table.add_row("Free disk (workdir volume)", f"{free_gb:.1f} GB")
-
-    if settings.tier1.enabled:
-        tier1_ok = tier1_local.is_available()
-        status = "[green]ollama reachable[/]" if tier1_ok else "[red]unavailable - Tier 0 only[/]"
-    else:
-        status = "[yellow]disabled in config[/]"
-    table.add_row(f"tier 1: {settings.tier1.model}", status)
-
-    for label, chord in (("voice", settings.hotkeys.voice), ("text", settings.hotkeys.text)):
-        try:
-            hotkey_ok = adapter.verify_hotkey_available(chord)
-            status = "[green]available[/]" if hotkey_ok else "[red]already claimed by another app[/]"
-        except UnsupportedCapability:
-            status = "[yellow]cannot verify on this platform[/]"
-        table.add_row(f"hotkey: {label} ({chord})", status)
-
-    all_caps = {
-        "list_windows",
-        "focus_window",
-        "launch",
-        "running_processes",
-        "open_default_browser",
-        "running_browsers",
-        "set_volume",
-        "lock_screen",
-        "screenshot",
-        "notify",
-        "open_path",
-    }
-    present = adapter.capabilities()
-    for cap in sorted(all_caps):
-        status = "[green]present[/]" if cap in present else "[red]absent[/]"
-        table.add_row(f"capability: {cap}", status)
-
-    console.print(table)
-
-
 def bootstrap() -> Settings:
     settings = get_settings()
     setup_logging(settings)
@@ -197,14 +151,23 @@ class VoiceCapture(Protocol):
     def stop(self) -> None: ...
 
 
-def start_voice_mode(settings: Settings) -> VoiceCapture | None:
+VoiceState = Literal["listening", "thinking", "idle", "error"]
+
+
+def start_voice_mode(
+    settings: Settings, on_state_change: Callable[[VoiceState], None] | None = None
+) -> VoiceCapture | None:
     """Wires the voice hotkey to the same pipeline as --text (spec Section
     10, Phase 3). Audio-stack imports are deferred to here, not module
     scope, so a missing/broken mic, PortAudio, or model download never
     breaks the --text path (invariant 9: degrade, never brick; invariant 10:
     text is an equal path, not a fallback). Returns the running capture
     object (call .stop() to release the hotkey), or None if voice mode
-    could not start."""
+    could not start.
+
+    `on_state_change` is an optional hook for vox/ui/tray.py to drive the
+    tray icon (idle/listening/thinking/error) - app.py stays UI-agnostic and
+    still works with it omitted."""
     try:
         from vox.audio.capture import HotkeyCapture
         from vox.audio.tts import speak
@@ -232,26 +195,45 @@ def start_voice_mode(settings: Settings) -> VoiceCapture | None:
         )
         return None
 
+    def _notify(state: VoiceState) -> None:
+        if on_state_change is not None:
+            try:
+                on_state_change(state)
+            except Exception:
+                logger.warning("on_state_change(%r) raised", state, exc_info=True)
+
     def _on_recorded(pcm: np.ndarray) -> None:
-        logger.info("Recorded %.2fs of audio.", len(pcm) / 16000)
-        trimmed = trim_silence(pcm)
-        if not has_speech(trimmed):
-            logger.info("No speech detected in recording; skipping routing.")
-            return
-        logger.info("VAD kept %.2fs after trimming.", len(trimmed) / 16000)
-        transcript = transcribe(trimmed)
-        logger.info(
-            "Transcript: %r (confidence=%.2f, language=%s)",
-            transcript.text,
-            transcript.confidence,
-            transcript.language,
-        )
-        result = handle_transcript(transcript)
-        logger.info("Result: ok=%s speech=%r", result.ok, result.speech)
-        speak(result.speech)
+        end_state: VoiceState = "idle"
+        try:
+            logger.info("Recorded %.2fs of audio.", len(pcm) / 16000)
+            trimmed = trim_silence(pcm)
+            if not has_speech(trimmed):
+                logger.info("No speech detected in recording; skipping routing.")
+                return
+            logger.info("VAD kept %.2fs after trimming.", len(trimmed) / 16000)
+            transcript = transcribe(trimmed)
+            logger.info(
+                "Transcript: %r (confidence=%.2f, language=%s)",
+                transcript.text,
+                transcript.confidence,
+                transcript.language,
+            )
+            result = handle_transcript(transcript)
+            logger.info("Result: ok=%s speech=%r", result.ok, result.speech)
+            speak(result.speech)
+        except Exception:
+            logger.error("voice pipeline raised", exc_info=True)
+            end_state = "error"
+        finally:
+            _notify(end_state)
 
     try:
-        capture = HotkeyCapture(settings.hotkeys.voice, on_recorded=_on_recorded)
+        capture = HotkeyCapture(
+            settings.hotkeys.voice,
+            on_recorded=_on_recorded,
+            on_start=lambda: _notify("listening"),
+            on_stop=lambda: _notify("thinking"),
+        )
         capture.start()
     except Exception:
         logger.warning("Failed to start the voice hotkey listener.", exc_info=True)

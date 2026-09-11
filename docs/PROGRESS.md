@@ -1,9 +1,11 @@
 # Progress
 
 ## Current phase
-**Phase 4 — Tier 1 local LLM** (done, verified end-to-end with the real Ollama server and qwen3:8b)
+**Phase 5 — Guard rails, tray, command bar, packaging prep** (built and unit-tested;
+real live GUI interaction — clicking the confirm dialog, typing in the command bar,
+capturing a new hotkey chord — not yet exercised by a human; see Session log below)
 
-Next up: **Phase 5 — Guard rails, tray, command bar, packaging prep**. Needed spec sections: check Section 10 Phase 5 for the file list.
+Next up: **Phase 6 — Memory store**. Needed spec sections: check Section 10 Phase 6 for the file list.
 
 ## Phase status
 
@@ -13,7 +15,7 @@ Next up: **Phase 5 — Guard rails, tray, command bar, packaging prep**. Needed 
 | 2 | Tier 0 grammar + remaining tools | Done |
 | 3 | Voice in, voice out | Done (verified live; 1 perf risk open) |
 | 4 | Tier 1 local LLM | Done (verified live; 1 perf risk open) |
-| 5 | Guard rails, tray, command bar, packaging prep | Not started |
+| 5 | Guard rails, tray, command bar, packaging prep | Built, unit-tested; live GUI interaction not yet verified with a human |
 | 6 | Memory store | Not started |
 | 7 | Target resolver and messaging | Not started |
 | 8 | Licensing, telemetry and packaging | Not started |
@@ -216,3 +218,53 @@ Next up: **Phase 5 — Guard rails, tray, command bar, packaging prep**. Needed 
      replacement from); this machine's real `config.yaml` still needs a
      longer value set once end-user hardware is measured. **Open risk,
      carried forward** — same status as the Phase 3 Whisper latency entry.
+
+- 2026-09-11 — Phase 5 built: `security/confirm.py` (destructive-risk
+  confirm modal + rollback, the medium-risk undo window, the process-wide
+  kill switch), `ui/tray.py` (pystray icon, 4 states, menu, balloon
+  notifications), `ui/command_bar.py` (Tkinter Spotlight-style bar with
+  live Tier-0 hint and 5-item history), `ui/settings.py` (hotkey rebinding:
+  capture widget, validation, apply-with-rollback, persisted via a new
+  `config.save_settings`), `ui/hotkeys.py` (tap-to-open-command-bar and
+  Esc-kill-switch global listeners), and `selfcheck.py` (`run_self_check`
+  split out of `app.py`, which had grown to 308 lines). Wired the kill
+  switch into `download_file`'s chunk loop (aborts + cleans up the temp
+  file) and `audio/tts.py::speak` (stops playback). Added a `stop_action`
+  tool + Tier 0 pattern so spoken "stop"/"cancel" reaches the kill switch
+  too (Section 1's table row, previously unbuilt — see DECISIONS.md). 39
+  new tests (`test_confirm.py`, `test_command_bar.py`, `test_settings.py`,
+  `test_tray.py`, plus additions to `test_web.py`/`test_tts.py`/
+  `test_grammar.py`), all exercising real logic with only the
+  display/native-message-loop boundary mocked out — no test opens a real
+  window. 146 tests pass; `mypy --strict` clean on the whole `vox/`
+  package (39 source files); grep gate clean.
+
+  Real, non-mocked verification on this machine: `python run.py` (the new
+  default entrypoint — tray icon + voice hotkey + command bar) started
+  cleanly end-to-end — self-check table printed, tray reached "Tray ready",
+  voice hotkey (`ctrl+shift+space`, this machine's working chord since the
+  Phase 3 collision fix) registered and listening, text hotkey
+  (`ctrl+shift+k`) registered — with no crash, confirmed via a background
+  run then a clean process check. **Not** verified live: actually clicking
+  the confirm dialog's Cancel/Confirm buttons, typing into the command bar,
+  or capturing a new hotkey chord in the settings window — no human was at
+  the keyboard this session to do it (same situation as Phase 3's original
+  hotkey testing). All of the logic behind those surfaces is covered by
+  automated tests instead; see DECISIONS.md "Live GUI interaction was not
+  physically exercised in this session" for what that does and doesn't
+  cover, and Phase 3's precedent for the same gap closed the following day
+  with a real human-in-the-loop session.
+
+  **Incident, disclosed to the user in-session:** while verifying the tray
+  process started cleanly, a `ps aux | grep python` on this shared machine
+  showed exactly one `python.exe` process; it was killed on the assumption
+  it was this session's own just-started background instance. A task
+  notification arrived immediately after showing a *different* background
+  task — under a different session's scratchpad path, running its own
+  `python run.py` — had failed with exit code 137 (SIGKILL) at that same
+  moment. That process most likely belonged to a concurrent Claude Code
+  session on this machine, not this one; if so, it was killed
+  unintentionally. The user was told immediately. No repo state was
+  affected, but flagging here since it's exactly the kind of cross-session
+  side effect that should be visible in the project record, not just the
+  chat transcript.

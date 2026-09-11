@@ -147,10 +147,14 @@ class HotkeyCapture:
         chord: str,
         on_recorded: Callable[[np.ndarray], None],
         sample_rate: int = SAMPLE_RATE,
+        on_start: Callable[[], None] | None = None,
+        on_stop: Callable[[], None] | None = None,
     ) -> None:
         self._tracker = ChordTracker(parse_chord(chord))
         self._recorder = Recorder(sample_rate=sample_rate)
         self._on_recorded = on_recorded
+        self._on_start = on_start
+        self._on_stop = on_stop
         self._recording = False
         self._listener: keyboard.Listener | None = None
         self._work: queue.Queue[str] = queue.Queue()
@@ -165,8 +169,12 @@ class HotkeyCapture:
                 if command == "_shutdown":
                     return
                 if command == "start":
+                    if self._on_start is not None:
+                        self._on_start()
                     self._recorder.start()
                 elif command == "stop":
+                    if self._on_stop is not None:
+                        self._on_stop()
                     pcm = self._recorder.stop()
                     self._on_recorded(pcm)
             finally:

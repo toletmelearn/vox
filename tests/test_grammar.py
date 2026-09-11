@@ -75,6 +75,11 @@ CASES: list[tuple[str, str | None, dict[str, object] | None]] = [
     # lock_screen
     ("lock the screen", "lock_screen", {}),
     ("lock pc", "lock_screen", {}),
+    # stop_action (spec Section 1: "stop"/"cancel" aborts the running action)
+    ("stop", "stop_action", {}),
+    ("cancel", "stop_action", {}),
+    ("cancel that", "stop_action", {}),
+    ("band karo", "stop_action", {}),  # Hindi alias -> "stop"
     # context pronouns (no Context module yet -> always a clarification)
     ("open it", "__clarify__", None),
     ("make that into a pdf", "__clarify__", None),

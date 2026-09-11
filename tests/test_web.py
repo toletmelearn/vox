@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from vox.security.confirm import get_kill_switch
 from vox.tools.web import UrlValidationError, _validate_url, download_file, play_youtube
 
 
@@ -114,3 +115,50 @@ def test_download_file_enforces_max_size(jail_settings, mocker):
     result = download_file(url="https://example.com/big.bin")
     assert not result.ok
     assert not Path(jail_settings.paths.downloads, "big.bin").exists()
+
+
+def test_download_file_aborts_on_kill_switch_and_cleans_up_temp_file(jail_settings, mocker):
+    """Spec Section 10 Phase 5 acceptance: 'Esc during a large download
+    aborts it and cleans up the temp file.' The kill switch is checked
+    inside the chunk loop (spec Section 8.7); this simulates Esc firing
+    partway through a download."""
+    kill_switch = get_kill_switch()
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            yield b"first chunk"
+            kill_switch.trigger()  # simulate Esc firing mid-download
+            yield b"second chunk, never written"
+
+    mocker.patch("vox.tools.web.requests.get", return_value=FakeResponse())
+
+    tmp_paths_created: list[Path] = []
+    import tempfile as tempfile_module
+
+    real_mkstemp = tempfile_module.mkstemp
+
+    def _tracking_mkstemp(*args, **kwargs):
+        fd, path_str = real_mkstemp(*args, **kwargs)
+        tmp_paths_created.append(Path(path_str))
+        return fd, path_str
+
+    mocker.patch("vox.tools.web.tempfile.mkstemp", side_effect=_tracking_mkstemp)
+
+    try:
+        result = download_file(url="https://example.com/big.bin")
+    finally:
+        kill_switch.clear()
+
+    assert not result.ok
+    assert not Path(jail_settings.paths.downloads, "big.bin").exists()
+    assert len(tmp_paths_created) == 1
+    assert not tmp_paths_created[0].exists()  # temp file cleaned up, not left behind

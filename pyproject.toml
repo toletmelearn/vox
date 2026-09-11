@@ -22,6 +22,7 @@ dependencies = [
     "ollama",
     "pywin32; sys_platform == 'win32'",
     "pillow; sys_platform == 'win32'",
+    "pystray; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -53,7 +54,7 @@ strict = true
 # site. Contrast pynput and Pillow above, which do have real fixes. See
 # DECISIONS.md.
 [[tool.mypy.overrides]]
-module = ["docx.*", "reportlab.*", "yt_dlp.*", "onnxruntime.*", "sounddevice.*", "faster_whisper.*", "piper.*"]
+module = ["docx.*", "reportlab.*", "yt_dlp.*", "onnxruntime.*", "sounddevice.*", "faster_whisper.*", "piper.*", "pystray.*"]
 ignore_missing_imports = true
 
 [build-system]

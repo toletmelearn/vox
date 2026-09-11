@@ -48,14 +48,47 @@ def test_speak_synthesizes_and_plays(mocker, jail_settings):
     mock_voice.synthesize.return_value = [_fake_chunk(100), _fake_chunk(50)]
     mocker.patch.object(tts_module, "_get_voice", return_value=mock_voice)
     play_mock = mocker.patch("vox.audio.tts.sd.play")
-    wait_mock = mocker.patch("vox.audio.tts.sd.wait")
+    stop_mock = mocker.patch("vox.audio.tts.sd.stop")
+
+    fake_stream = mocker.MagicMock()
+    fake_stream.active = True
+
+    def _finish_after_one_poll(_interval: float) -> None:
+        fake_stream.active = False
+
+    mocker.patch("vox.audio.tts.sd.get_stream", return_value=fake_stream)
+    mocker.patch("vox.audio.tts.time.sleep", side_effect=_finish_after_one_poll)
 
     tts_module.speak("Created folder Test.")
 
     play_mock.assert_called_once()
     args, kwargs = play_mock.call_args
     assert len(args[0]) == 150
-    wait_mock.assert_called_once()
+    stop_mock.assert_not_called()  # playback finished naturally, kill switch never fired
+
+
+def test_speak_stops_playback_when_kill_switch_is_set(mocker, jail_settings):
+    from vox.security.confirm import get_kill_switch
+
+    mock_voice = mocker.MagicMock()
+    mock_voice.synthesize.return_value = [_fake_chunk(100)]
+    mocker.patch.object(tts_module, "_get_voice", return_value=mock_voice)
+    mocker.patch("vox.audio.tts.sd.play")
+    stop_mock = mocker.patch("vox.audio.tts.sd.stop")
+
+    fake_stream = mocker.MagicMock()
+    fake_stream.active = True
+    mocker.patch("vox.audio.tts.sd.get_stream", return_value=fake_stream)
+    mocker.patch("vox.audio.tts.time.sleep")
+
+    kill_switch = get_kill_switch()
+    kill_switch.trigger()
+    try:
+        tts_module.speak("this should be interrupted")
+    finally:
+        kill_switch.clear()
+
+    stop_mock.assert_called_once()
 
 
 def test_speak_never_raises_on_backend_failure(mocker, jail_settings):

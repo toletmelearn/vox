@@ -7,6 +7,7 @@ is needed here — download_dir is passed explicitly instead."""
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,8 +16,11 @@ from piper import PiperVoice
 from piper.download_voices import download_voice
 
 from vox.config import get_settings
+from vox.security.confirm import get_kill_switch
 
 logger = logging.getLogger("vox.audio.tts")
+
+_POLL_INTERVAL_S = 0.05
 
 _voice: PiperVoice | None = None
 
@@ -54,7 +58,16 @@ def speak(text: str) -> None:
         if not chunks:
             return
         audio = np.concatenate([c.audio_float_array for c in chunks])
+        kill_switch = get_kill_switch()
         sd.play(audio, samplerate=chunks[0].sample_rate)
-        sd.wait()
+        stream = sd.get_stream()
+        # Polled rather than sd.wait() so the kill switch (spec Section 8.7:
+        # "stops TTS") can interrupt playback instead of blocking until it
+        # finishes naturally.
+        while stream is not None and stream.active:
+            if kill_switch.is_set():
+                sd.stop()
+                break
+            time.sleep(_POLL_INTERVAL_S)
     except Exception:
         logger.warning("speak failed for %r", text, exc_info=True)

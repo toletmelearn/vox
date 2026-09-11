@@ -565,3 +565,132 @@ flagging as the phase's open risk below rather than guessing a number now.
 This mirrors Phase 3's Whisper-latency finding exactly: functionally
 correct, measurably slower than the spec's target figure on this specific
 CPU, unverified on non-sandboxed end-user hardware.
+
+## Phase 5
+
+### Undo window has no clickable in-place action — it's a tray-menu item, not a toast button
+Spec Section 8.4 says medium-risk actions get "a tray toast with a 4-second
+undo window," and 3A.1 restricts notifications to "pystray balloon
+notifications only... do not add a WinRT toast dependency." Plain
+`pystray`/Win32 balloons are informational only — there is no cross-platform
+way to attach a clickable "Undo" button to one without exactly the WinRT
+toast-actions API Section 3A.1 forbids. Implemented instead as: the balloon
+fires the instant the window opens (naming the tool and the window length),
+and a live "Undo last action" tray-menu item is enabled for exactly that
+window (`security/confirm.py`'s `PendingUndo.expired()`, checked by
+`pystray.MenuItem(enabled=...)` on every menu open) and disabled once it
+passes. This delivers the spec's actual intent — a short, real chance to
+undo, surfaced where the user is told to look — without a dependency the
+spec explicitly declined.
+
+### `security/confirm.py` also owns the kill switch and the undo window, not just the confirm dialog
+Section 4's directory listing gives `confirm.py` one line ("risk-tier
+confirmation UI"), and Section 10 lists "kill switch" as a separate Phase 5
+deliverable with no file of its own. Both the kill switch and the undo
+window are risk-tier guard-rail state (Section 8.4's medium/destructive
+handling), not UI, and neither has anywhere else to live per the fixed
+directory structure (Section 4: "do not add top-level directories") — so
+they're grouped with the destructive-confirm logic they're conceptually
+part of, rather than invented a new module for a few dozen lines each.
+`vox/ui/tray.py` reads this state (`get_pending_undo`, `set_undo_listener`)
+but nothing in `confirm.py` imports `vox.ui` — app.py and the tools layer
+stay UI-agnostic, matching the existing `set_audit_log`/`set_adapter`
+dependency-injection pattern used throughout the codebase.
+
+### Two new files not named in Section 4's directory listing: `vox/ui/hotkeys.py` and `vox/selfcheck.py`
+Both are splits of work the spec does assign a home to, not new
+responsibilities:
+- `ui/hotkeys.py` holds `TapHotkeyListener` (text hotkey: tap opens the
+  command bar) and `AbortHotkeyListener` (Esc: kill switch). Section 6D's
+  text hotkey and Section 8.7's kill switch are both explicitly Phase 5
+  work; putting their listener classes in `audio/capture.py` would mix
+  microphone-capture code with UI-triggering globals that never touch
+  `sounddevice`, and would push that module (already 216 lines before this
+  phase) past a comfortable size. A new leaf file under the existing `ui/`
+  directory is a split, not a new top-level location.
+- `selfcheck.py` is `run_self_check`, moved out of `app.py` verbatim once
+  Phase 5's additions pushed `app.py` to 308 lines — over CLAUDE.md's
+  300-line-per-module guideline. `vox.app.run_self_check` still resolves
+  (re-exported by the `from vox.selfcheck import run_self_check` in
+  `app.py`), so no caller or test needed to change.
+
+### A fresh `tk.Tk()` root per dialog, never a shared persistent one
+The confirm modal, the command bar, and the settings window each construct
+their own `Tk()`, run its `mainloop()`, and let it be garbage-collected on
+close, rather than one hidden root reused for the process lifetime. Spec
+Section 6D asks for the command bar to "close automatically on submit" and
+Section 8.4 for the confirm dialog to block until answered — a fresh root
+per open satisfies both directly and sidesteps Tkinter's single-mainloop-
+per-thread constraint interacting with `pystray.Icon.run()`, which owns the
+*process's* main thread for its own native message loop. Since a
+destructive confirmation, a command-bar submission, and a settings edit are
+each user-serial actions (the spec's flows never show two open at once),
+one Tk root at a time, constructed on whichever worker thread triggered it,
+is sufficient; nothing here assumes multiple simultaneous windows.
+
+### Kill switch is checked by `download_file`'s chunk loop and by TTS playback, not by `convert_docx_to_pdf`
+Section 8.7 names "the download loop, conversion" as the long-running
+operations to check; Phase 5's acceptance test is specifically about a
+download. `download_file` checks `get_kill_switch().is_set()` once per
+64KB chunk and cleans up its temp file on abort (tested in
+`tests/test_web.py`). `audio/tts.py::speak` also polls it during playback
+so Esc "stops TTS" per the same spec line, verified with a mocked
+`sounddevice` stream. `tools/documents.py::convert_to_pdf`'s Word-COM path
+(`PlatformAdapter.convert_docx_to_pdf`) is a single blocking COM call with
+no chunk boundary to poll inside — Word does not expose incremental
+progress through the `pywin32` surface already in use, and adding one would
+mean either a new dependency or polling-and-killing the Word process
+mid-conversion, which risks a corrupt output file. Left unwired; conversions
+in this codebase are single documents generated locally, not the kind of
+multi-minute operation the spec's own example (a large download) is
+worried about.
+
+### Spoken "stop"/"cancel" now exists as a Tier 0 pattern + a new `stop_action` tool
+Section 1's example table lists "stop"/"cancel" -> "Aborts the running
+action" as a v1 requirement, but no phase's acceptance criteria ever named
+it explicitly, and Phase 2 (which built the rest of the Tier 0 grammar)
+never added it — there was no kill switch yet for it to call. Since Phase
+5 is where the kill switch primitive actually lands, closing this gap here
+rather than leaving it open costs one small `safe`-risk tool
+(`tools/system.py::stop_action`, triggers the kill switch, no jail
+interaction) plus one Tier 0 regex matching `stop`/`cancel`/`abort`
+(optionally followed by "it"/"that"/"this"). The existing Hindi alias
+`band karo -> stop` (Phase 2) now resolves to it too, unchanged.
+
+### The Phase 5 acceptance line about voice-then-text context resolution is not fully verifiable yet
+"A command started by voice and continued by text resolves context
+correctly ('make a Word file about X', then typed 'rename it to Y')" needs
+two things that don't exist until Phase 6: a remembered last-artifact
+(`memory/context.py`) and a `rename` Tier 0 pattern (there isn't one - only
+`open it` and `make/convert/turn ... to pdf` exist, both hard-coded to
+always clarify per Phase 2's own docstring: "Context itself is a Phase 6
+deliverable"). Building either now would duplicate Phase 6's actual
+architecture (the TTL-based short-term store Section 6C specifies) ahead of
+its own phase, exactly what CLAUDE.md's phase-order rule exists to prevent.
+What Phase 5 *can* and does verify: voice and text are structurally the
+same pipeline, not two forks that happen to look similar — both
+`handle_text` and `handle_transcript` call the same `route_and_execute`,
+and a context-pronoun phrase run through either produces byte-identical
+`RouteResult` and audit behaviour today (both get "Which file do you
+mean?", regardless of source, because Tier 0 has no state to consult yet).
+The actual cross-modal memory hand-off is carried forward as Phase 6 work,
+not silently declared done.
+
+### Live GUI interaction was not physically exercised in this session
+Same situation as Phase 3's hotkey testing: no human was available in this
+session to click the confirm dialog's Cancel/Confirm buttons, type into the
+command bar, or press "Change" in the settings window and tap a new chord.
+Every piece of *logic* behind those UI surfaces is covered by an automated
+test with the real Tkinter/pystray code paths mocked out only where a
+display or a native message loop would otherwise be required
+(`tests/test_confirm.py`, `tests/test_command_bar.py`,
+`tests/test_settings.py`, `tests/test_tray.py`) — validation, rollback,
+history, hints, the confirm gate's effect on the audit log, the undo
+window's timing, and the icon's per-state image are all exercised for
+real. What was verified live on this machine: `python run.py` starts
+cleanly end-to-end (self-check table, tray icon reaches "Tray ready",
+voice hotkey registered and listening, text hotkey registered) with no
+crash. The actual button clicks and key-combo captures need a follow-up
+session with a human at the keyboard, same as Phase 3's real hold-to-talk
+verification.
+

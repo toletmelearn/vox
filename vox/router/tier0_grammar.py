@@ -139,6 +139,10 @@ def _h_lock_screen(m: Match[str]) -> RouteResult:
     return _call("lock_screen", {})
 
 
+def _h_stop_action(m: Match[str]) -> RouteResult:
+    return _call("stop_action", {})
+
+
 def _h_open_context_pronoun(m: Match[str]) -> RouteResult:
     return _clarify("Which file do you mean?")
 
@@ -221,6 +225,10 @@ _PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
     (
         re.compile(r"^lock(?: the)?\s+(?:screen|computer|pc)$", re.IGNORECASE),
         _h_lock_screen,
+    ),
+    (
+        re.compile(r"^(?:stop|cancel|abort)(?:\s+(?:it|that|this))?$", re.IGNORECASE),
+        _h_stop_action,
     ),
     (
         re.compile(r"^open\s+(?:it|that|the file)$", re.IGNORECASE),

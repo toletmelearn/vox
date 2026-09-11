@@ -16,12 +16,18 @@ from yt_dlp import YoutubeDL
 
 from vox.config import get_settings
 from vox.platform import get_adapter
+from vox.security.confirm import get_kill_switch
 from vox.security.jail import JailViolation, resolve_in_jail, sanitize_filename
 from vox.tools.registry import ToolResult, tool
 
 logger = logging.getLogger("vox.tools.web")
 
 _VIDEO_ID_RE = re.compile(r"^[\w-]{6,20}$")
+
+
+class _DownloadAborted(Exception):
+    """Raised internally when the kill switch fires mid-download (spec
+    Section 8.7); never propagates past download_file."""
 
 
 class UrlValidationError(ValueError):
@@ -134,6 +140,7 @@ def download_file(url: str, filename: str = "") -> ToolResult:
         return ToolResult(ok=False, speech="That filename isn't allowed.")
 
     max_bytes = settings.security.max_download_mb * 1024 * 1024
+    kill_switch = get_kill_switch()
     tmp_fd, tmp_path_str = tempfile.mkstemp()
     tmp_path = Path(tmp_path_str)
     try:
@@ -142,12 +149,18 @@ def download_file(url: str, filename: str = "") -> ToolResult:
                 response.raise_for_status()
                 total = 0
                 for chunk in response.iter_content(chunk_size=65536):
+                    if kill_switch.is_set():
+                        raise _DownloadAborted("aborted via kill switch")
                     total += len(chunk)
                     if total > max_bytes:
                         raise ValueError(
                             f"download exceeds max_download_mb ({settings.security.max_download_mb})"
                         )
                     tmp_file.write(chunk)
+    except _DownloadAborted:
+        tmp_path.unlink(missing_ok=True)
+        logger.info("download_file aborted for %r", url)
+        return ToolResult(ok=False, speech="Download cancelled.")
     except (requests.RequestException, ValueError, OSError):
         tmp_path.unlink(missing_ok=True)
         logger.warning("download_file failed for %r", url, exc_info=True)

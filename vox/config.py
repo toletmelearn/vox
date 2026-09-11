@@ -122,6 +122,16 @@ class Settings(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 
+def save_settings(settings: Settings, path: Path | None = None) -> None:
+    """Persist settings back to config.yaml (spec Section 6E: a hotkey
+    rebind must survive a restart, not just live in the in-memory Settings
+    the rest of the process shares via get_settings())."""
+    if path is None:
+        path = Path("config.yaml")
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(settings.model_dump(), f, sort_keys=False)
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from a YAML file. Missing file -> defaults. Never raises
     on a missing file; a malformed one still raises so a broken config.yaml

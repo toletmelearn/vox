@@ -5,6 +5,7 @@ from datetime import datetime
 
 from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
+from vox.security.confirm import get_kill_switch
 from vox.security.jail import resolve_in_jail
 from vox.tools.registry import ToolResult, tool
 
@@ -39,6 +40,16 @@ def take_screenshot() -> ToolResult:
     if not saved:
         return ToolResult(ok=False, speech="Couldn't take a screenshot.")
     return ToolResult(ok=True, speech="Screenshot saved.", artifact_path=str(dest))
+
+
+@tool(
+    name="stop_action",
+    risk="safe",
+    description="Abort whatever is currently running, e.g. a download or a spoken response.",
+)
+def stop_action() -> ToolResult:
+    get_kill_switch().trigger()
+    return ToolResult(ok=True, speech="Stopping.")
 
 
 @tool(name="lock_screen", risk="destructive", description="Lock the workstation.")
