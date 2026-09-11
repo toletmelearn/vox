@@ -19,6 +19,7 @@ dependencies = [
     "onnxruntime",
     "piper-tts",
     "pynput",
+    "ollama",
     "pywin32; sys_platform == 'win32'",
     "pillow; sys_platform == 'win32'",
 ]

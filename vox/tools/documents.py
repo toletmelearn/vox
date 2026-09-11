@@ -28,7 +28,13 @@ def _ensure_suffix(leaf: str, suffix: str) -> str:
 @tool(
     name="create_word_document",
     risk="safe",
-    description="Create a .docx with a title and body sections.",
+    description=(
+        "Create a .docx with a title and one or more headed sections. Each "
+        "entry in `sections` is a single string formatted as "
+        "'Heading|Body text for that section.' (a literal pipe character "
+        "separates the two) - do not omit the body half, and do not put the "
+        "heading and body in separate list entries."
+    ),
 )
 def create_word_document(
     filename: str, title: str, sections: list[str], parent: str = "documents"
@@ -56,7 +62,11 @@ def create_word_document(
 @tool(
     name="create_pdf",
     risk="safe",
-    description="Create a .pdf with a title and body paragraphs.",
+    description=(
+        "Create a .pdf with a title and body paragraphs. Each entry in "
+        "`paragraphs` is one paragraph of plain body text - write full, "
+        "informative sentences, not headings alone."
+    ),
 )
 def create_pdf(
     filename: str, title: str, paragraphs: list[str], parent: str = "documents"

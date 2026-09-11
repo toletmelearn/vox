@@ -33,6 +33,11 @@ def test_make_folder_traversal_is_rejected_no_folder_no_execution(jail_settings,
 
 
 def test_unrecognised_text_returns_clarification_without_audit_row(jail_settings, audit_log):
+    # Tier 1 is exercised separately (mocked) in tests/test_tier1.py; here we
+    # want the plain "no tier could handle this" path, so disable it rather
+    # than let it reach for the real Ollama server (spec Section 13: no test
+    # may create a network connection).
+    jail_settings.tier1.enabled = False
     result = handle_text("book me a flight to Goa")
     assert not result.ok
     assert _row_count(audit_log) == 0

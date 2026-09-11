@@ -438,3 +438,120 @@ that remains open per the entry above and needs checking on non-sandboxed
 hardware. Holds under roughly 0.3-0.5s still record nothing due to MME
 stream-startup latency (also documented above) — a known, minor UX rough
 edge, not a correctness bug.
+
+## Phase 4
+
+### Tier 1 confidence is binary (1.0 / 0.0), not a real probability
+Section 7's escalation logic gates execution on `t1.confidence >=
+config.tier1.min_confidence` (default 0.6), but Ollama's `/api/chat`
+endpoint exposes no native per-tool-call confidence score (its optional
+`logprobs` is token-level and not something the spec asks for or that maps
+cleanly onto "how sure was the model about this tool choice"). Rather than
+inventing an unvalidated numeric heuristic (the same trap `_logprob_to_confidence`
+fell into for STT in Phase 3 — see that entry), `tier1_local.route()` reports
+`confidence=1.0` whenever the returned call validates against its tool's
+pydantic schema, and `0.0` (with `call=None`) whenever it doesn't, times
+out, or the server is unreachable. The threshold check in `app.py` still
+runs — it's just structurally always-pass/never-run given this binary
+signal, kept because the spec's escalation pseudocode names it explicitly
+and a future, real confidence source (e.g. `logprobs` averaged over the
+tool-call tokens) could be dropped in later without changing callers.
+
+### `ask_clarification` lives in a new `vox/tools/router_tools.py`, not an existing file
+Section 4's literal directory listing doesn't name a file for it, and it
+doesn't semantically belong in `system.py` (time/volume/screenshot/lock) or
+any other existing tools module. Following the same pattern already used
+for later-phase tools not yet built (`targets.py`, `messaging.py`,
+`memory_tools.py` are pre-listed in Section 4 for Phases 6/7), a new
+single-purpose module is the least-surprising home. Registered exactly as
+Section 7 specifies: `risk="safe"`, returns `ToolResult(ok=True,
+speech=question)` — no special-casing anywhere in the router; `app.py`'s
+existing guard/audit/execute path handles it like any other tool.
+
+### `httpx` imported directly for exception types, not declared in Section 3
+`ollama.Client.chat()` does not uniformly wrap transport failures in its own
+exception types: a slow/unreachable server raises a *raw*, unwrapped
+`httpx.TimeoutException` (confirmed empirically — see the timeout entry
+below), while `ollama._client._request_raw` only wraps `httpx.HTTPStatusError`
+(as `ollama.ResponseError`) and `httpx.ConnectError` (as a bare builtin
+`ConnectionError`). Distinguishing "took too long" from "server not there"
+(spec Section 7: "On timeout, speak 'that took too long' and abort") is not
+possible without naming `httpx.TimeoutException` specifically. `httpx` is
+already an unavoidable transitive dependency of `ollama` (itself pinned in
+Section 3), not a new library being introduced — only its already-installed
+exception types are imported, nothing else from it is used. Not added to
+`pyproject.toml` as a direct dependency, since the spec's dependency list is
+"pinned intent" and doesn't name it; flagging here instead so this coupling
+to `ollama`'s internal error-wrapping behaviour (which could change in a
+future `ollama` release) is visible rather than silent.
+
+### Real finding: this dev machine's RAM (15.9 GB reported) trips the spec's literal "under 16 GB" Tier 1 cutoff
+Section 3: "If the machine has under 16 GB RAM, the router must fall back to
+Tier 0 only and log a warning at startup." Implemented literally
+(`MIN_RAM_GB = 16.0`, `psutil.virtual_memory().total / 1024**3 >=
+MIN_RAM_GB`). This machine has a physical 16 GB stick, but Windows reports
+15.9 GB total to `psutil` (firmware/OS-reserved memory, normal and expected
+on real hardware) — so the literal rule disables Tier 1 here even though
+direct, out-of-band testing (raw `ollama.Client().chat(...)` calls, and one
+`route_and_execute()` call with the RAM gate manually bypassed — see below)
+confirms `qwen3:8b` tool-calling works correctly on this exact machine. Kept
+the literal spec threshold rather than rounding or adding slack, since the
+spec gives a hard number and this is a real, reproducible measurement, not
+a bug in the check. Documented rather than silently worked around: the
+`run_self_check` table's "tier 1" row and the `Tier 1 disabled: this
+machine has under 16 GB RAM` log line are both real, not hypothetical, on
+this hardware. The bundled test suite exercises Tier 1's actual logic with
+the RAM gate mocked open (`monkeypatch.setattr(tier1_local, "has_enough_ram",
+lambda: True)`), since the acceptance criteria are about Tier 1's behaviour,
+not about this one machine's specific RAM figure.
+
+### Real finding: default `tier1.timeout_s: 12` is far too short for this hardware
+Measured directly against the real, locally running `qwen3:8b` (Ollama
+0.34.0, Q4_K_M, 85%/15% CPU/GPU split per `ollama ps`), with the RAM gate
+bypassed for measurement purposes only:
+- First call (cold, model not yet resident): **150s** for a single
+  `web_search`/`ask_clarification`-only 2-tool schema.
+- Warm call (model resident), same minimal 2-tool schema, an
+  unsupported request ("book me a flight to paris"): **29s** — and it
+  correctly called `ask_clarification` rather than fabricating a tool call.
+- Warm call through the real `route_and_execute()` pipeline, with the
+  **full 18-tool registry schema** (~5.6 KB of JSON, vs. the ~0.5 KB
+  2-tool schema above), for "make me a word document explaining
+  photosynthesis for class 8": timed out client-side at both 12s and 90s
+  attempts, then **succeeded at 71-77s** on two separate runs with a
+  180s client timeout, producing a real `.docx` (see below) — then, on a
+  fourth attempt for a different prompt ("...about the water cycle for a
+  school project") run while other tools (pytest, mypy) were active on
+  the same machine, it **exceeded 180s and timed out**. The larger tool
+  schema measurably and substantially increases latency over the 2-tool
+  baseline (consistent with CPU-bound prompt processing scaling with
+  prompt length), and that latency is highly variable run-to-run on this
+  shared/sandboxed CPU — not a single stable number the way the cold-vs-warm
+  split might suggest.
+
+The successful 71s run's actual tool call was inspected directly: it
+produced a `.docx` with a real `Title` paragraph and 5 `Heading 1`
+paragraphs (spec Phase 4 acceptance: "a title and at least three headed
+sections" — met, and exceeded). It also surfaced a real, separate gap:
+`create_word_document`'s `sections` format (`"Heading|Body text"`, pipe-
+delimited) was only ever documented in the function's implementation, not
+in its LLM-facing `description` (spec Section 12: "Docstrings on every tool
+function... write them for the model") — so the live model put full
+sentences in the heading half and left every body half empty, producing
+heading-only content. Fixed by rewriting `create_word_document`'s and
+`create_pdf`'s tool descriptions to state the pipe format and instruct
+real body text explicitly; not re-verified live a second time after the
+fix (each live round-trip costs 70s+ minimum on this hardware) but the
+fix is description-only, changes no logic, and is covered by the existing
+mocked `test_create_word_document_opens_cleanly` structural test.
+
+Spec's default (`config.example.yaml`, `config.py`) is left at `12` since
+that is the literal spec value and no broader hardware sample exists to
+pick a validated replacement (same reasoning as the Phase 3 STT
+`min_confidence` entry — don't silently change a spec default off one
+machine's measurement). This machine's real `config.yaml` should set a
+longer `tier1.timeout_s` once a stable real-world figure is measured;
+flagging as the phase's open risk below rather than guessing a number now.
+This mirrors Phase 3's Whisper-latency finding exactly: functionally
+correct, measurably slower than the spec's target figure on this specific
+CPU, unverified on non-sandboxed end-user hardware.

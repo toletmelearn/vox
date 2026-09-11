@@ -1,9 +1,9 @@
 # Progress
 
 ## Current phase
-**Phase 3 — Voice in, voice out** (done, verified end-to-end with real hardware)
+**Phase 4 — Tier 1 local LLM** (done, verified end-to-end with the real Ollama server and qwen3:8b)
 
-Next up: **Phase 4 — Tier 1 local LLM**. Needed spec sections: 0, 3, 7, 8, 12, 13.
+Next up: **Phase 5 — Guard rails, tray, command bar, packaging prep**. Needed spec sections: check Section 10 Phase 5 for the file list.
 
 ## Phase status
 
@@ -12,7 +12,7 @@ Next up: **Phase 4 — Tier 1 local LLM**. Needed spec sections: 0, 3, 7, 8, 12,
 | 1 | Skeleton, safety core, platform adapter | Done |
 | 2 | Tier 0 grammar + remaining tools | Done |
 | 3 | Voice in, voice out | Done (verified live; 1 perf risk open) |
-| 4 | Tier 1 local LLM | Not started |
+| 4 | Tier 1 local LLM | Done (verified live; 1 perf risk open) |
 | 5 | Guard rails, tray, command bar, packaging prep | Not started |
 | 6 | Memory store | Not started |
 | 7 | Target resolver and messaging | Not started |
@@ -23,7 +23,12 @@ Next up: **Phase 4 — Tier 1 local LLM**. Needed spec sections: 0, 3, 7, 8, 12,
 - OS: Windows 10 22H2 (build 19045)
 - Python version: 3.14.3
 - RAM / AVX2 / GPU: 15.9 GB RAM, AVX2 present, GPU not probed (not needed yet)
-- Ollama installed: not checked yet (Phase 4)
+- Ollama: 0.34.0 installed, reachable at the default `localhost:11434`.
+  `qwen3:8b` (Q4_K_M, 5.2 GB) pulled and confirmed via `ollama show qwen3:8b`
+  to have `tools` under Capabilities. **This machine's 15.9 GB reported RAM
+  is under the spec's 16 GB Tier 1 cutoff**, so Tier 1 is disabled by the
+  literal spec rule here even though the model works correctly when that
+  gate is bypassed for testing — see DECISIONS.md Phase 4.
 - CPU: 4 cores. Real end-to-end Whisper "small"/int8 latency measured at
   ~11-13s for a ~4s clip — far above spec's 2s target. Investigated (ruled
   out beam_size, added explicit cpu_threads); likely the fixed-cost 30s
@@ -156,3 +161,58 @@ Next up: **Phase 4 — Tier 1 local LLM**. Needed spec sections: 0, 3, 7, 8, 12,
   hardware. See DECISIONS.md "Phase 3 acceptance: fully verified
   end-to-end with real hardware, not just believed fixed" for the full
   closing summary.
+
+- 2026-09-11 — Phase 4 built: `router/tier1_local.py` (Ollama tool-calling:
+  `is_available()` RAM+reachability gate, `route()` with schema validation,
+  one retry on a malformed call, timeout/unreachable handling), the
+  `ask_clarification` tool (`tools/router_tools.py`), and the Tier 0 → Tier
+  1 escalation logic in `app.py::route_and_execute` (Tier 0 clarifications —
+  its context-pronoun patterns — never escalate; only a bare "no match"
+  does). Added a "tier 1" row to the startup self-check. 15 new tests
+  (`tests/test_tier1.py`), all mocking the Ollama client/response layer per
+  spec Section 13 — no test requires a running model or makes a network
+  connection. Fixed one pre-existing test (`test_app.py`'s "unrecognised
+  text" case) that would otherwise have started reaching for a real Ollama
+  server now that Tier 1 is wired in by default. 106 tests pass; mypy
+  --strict clean on the whole `vox/` package; grep gate clean.
+
+  Real, non-mocked verification against the actual installed Ollama 0.34.0
+  and `qwen3:8b` (confirmed via `ollama show qwen3:8b` to have `tools`
+  under Capabilities, per the session's instruction): raw tool-calling
+  round-trips for both a supported request (`web_search`) and an explicitly
+  unsupported one ("book me a flight to paris" → correctly called
+  `ask_clarification`, no fabricated tool call) were verified directly
+  against the live server. A full `route_and_execute()` round-trip (RAM
+  gate manually bypassed for this test only — see below) for "make me a
+  word document explaining photosynthesis for class 8" **succeeded for
+  real**: the model chose `create_word_document`, its args passed real
+  pydantic validation, and the real tool created
+  `~/Documents/photosynthesis_explanation.docx` with a real `Title`
+  paragraph and 5 `Heading 1` sections (left in place as evidence, per this
+  project's established practice — delete if unwanted). That live run also
+  caught a real gap — `create_word_document`'s pipe-delimited section
+  format was undocumented in its LLM-facing description, so the live model
+  left every section's body half empty — fixed by rewriting the
+  `create_word_document`/`create_pdf` tool descriptions to state the format
+  explicitly (not re-verified live a second time; the fix is
+  description-only and covered by the existing mocked document tests).
+
+  Two real findings, both fully documented in DECISIONS.md rather than
+  silently worked around:
+  1. **This machine's RAM (15.9 GB reported) trips the spec's literal
+     "under 16 GB → Tier 0 only" cutoff.** Tier 1 is correctly disabled by
+     default on this exact dev machine per the spec's own rule, even though
+     direct testing confirms the model works fine here once that gate is
+     bypassed. `run_self_check` and the log correctly show this.
+  2. **The spec's default `tier1.timeout_s: 12` is far too short for this
+     hardware.** Measured: 150s cold / 29s warm for a minimal 2-tool
+     schema; 71-77s warm for the full 18-tool registry schema (two
+     successful runs), but a later attempt under CPU contention exceeded
+     180s and timed out. This mirrors Phase 3's Whisper-latency finding
+     exactly — functionally correct, measurably slower than the spec's
+     target on this specific CPU, and highly variable run-to-run rather
+     than a single stable number. Left the shipped default at the spec's
+     literal `12` (no broader hardware sample to pick a validated
+     replacement from); this machine's real `config.yaml` still needs a
+     longer value set once end-user hardware is measured. **Open risk,
+     carried forward** — same status as the Phase 3 Whisper latency entry.

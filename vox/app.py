@@ -18,8 +18,8 @@ from vox.config import Settings, get_settings
 from vox.logging_setup import setup_logging
 from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
-from vox.router import tier0_grammar
-from vox.router.base import ToolCall, Transcript
+from vox.router import tier0_grammar, tier1_local
+from vox.router.base import RouteResult, ToolCall, Transcript
 from vox.security.audit import get_audit_log
 from vox.security.jail import JailViolation, jail_roots
 from vox.tools.registry import REGISTRY, ToolResult
@@ -73,13 +73,32 @@ def route_and_execute(transcript: Transcript) -> ToolResult:
     """The shared pipeline both input modes feed (spec Section 6D: "Both
     produce a Transcript... do not fork the pipeline"). Escalation logic
     (spec Section 7): a low-confidence transcript is refused before
-    routing; Tier 0 first; Tier 1/2 land in Phase 4, so anything Tier 0
-    doesn't resolve is a plain "didn't understand" for now."""
+    routing; Tier 0 first. A Tier 0 clarification (its context-pronoun
+    patterns, e.g. "make that a PDF" with no remembered artifact) is
+    returned as-is and never forwarded to Tier 1 - Tier 1 has no more
+    context than Tier 0 does until Phase 6's memory store exists, so
+    escalating would just trade one unresolved pronoun for a fabricated
+    guess (spec Section 7, tier0_grammar module docstring). Only a bare
+    "no match" from Tier 0 escalates. Tier 2 is not built until later, so
+    anything Tier 1 can't resolve (or Tier 1 being unavailable) ends in
+    "didn't understand" for now."""
     settings = get_settings()
     if transcript.confidence < settings.stt.min_confidence:
         return ToolResult(ok=False, speech="Sorry, I didn't catch that.")
 
     route_result = tier0_grammar.route(transcript.text)
+
+    if route_result.call is None and route_result.clarification is None:
+        if tier1_local.is_available():
+            route_result = tier1_local.route(transcript.text)
+            if route_result.call is not None and route_result.confidence < settings.tier1.min_confidence:
+                route_result = RouteResult(
+                    call=None,
+                    confidence=route_result.confidence,
+                    tier="tier1",
+                    clarification="I'm not sure what you meant. Could you rephrase that?",
+                )
+
     if route_result.clarification is not None:
         return ToolResult(ok=False, speech=route_result.clarification)
     if route_result.call is None:
@@ -130,6 +149,13 @@ def run_self_check(settings: Settings) -> None:
     workdir = Path(settings.paths.workdir).expanduser()
     free_gb = shutil.disk_usage(workdir).free / (1024**3)
     table.add_row("Free disk (workdir volume)", f"{free_gb:.1f} GB")
+
+    if settings.tier1.enabled:
+        tier1_ok = tier1_local.is_available()
+        status = "[green]ollama reachable[/]" if tier1_ok else "[red]unavailable - Tier 0 only[/]"
+    else:
+        status = "[yellow]disabled in config[/]"
+    table.add_row(f"tier 1: {settings.tier1.model}", status)
 
     for label, chord in (("voice", settings.hotkeys.voice), ("text", settings.hotkeys.text)):
         try:
