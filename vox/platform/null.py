@@ -54,6 +54,9 @@ class NullAdapter:
     def verify_hotkey_available(self, chord: str) -> bool:
         raise UnsupportedCapability("verify_hotkey_available is not available")
 
+    def restrict_directory_to_current_user(self, path: Path) -> bool:
+        raise UnsupportedCapability("restrict_directory_to_current_user is not available")
+
     def os_build(self) -> str:
         return "unknown"
 

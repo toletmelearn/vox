@@ -13,11 +13,14 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
+import ntsecuritycon
 import psutil
 import pythoncom
+import win32api
 import win32com.client
 import win32con
 import win32gui
+import win32security
 from PIL import ImageGrab
 
 from vox.platform.base import UnsupportedCapability, WindowInfo
@@ -198,6 +201,47 @@ class WindowsAdapter:
             user32.UnregisterHotKey(None, _PROBE_HOTKEY_ID)
         return ok
 
+    def restrict_directory_to_current_user(self, path: Path) -> bool:
+        """ACL granting only the current user (spec Section 6C: '~/.vox/
+        ... on Windows set an ACL granting only the current user'). Builds a
+        fresh DACL with a single ACE rather than shelling out to `icacls`,
+        whose /grant syntax is locale-dependent; pywin32 is already a pinned
+        dependency (Section 3).
+
+        The SID comes from the *process token* (SE_TOKEN_USER), not from
+        `LookupAccountName(GetUserName())`: on at least one real environment
+        this project was built and tested on, that name-based lookup
+        returned the machine/domain SID with the final user RID missing
+        (`S-1-5-21-x-y-z` instead of `S-1-5-21-x-y-z-1001`) - a *different*,
+        unprivileged principal. Granting access to that wrong SID replaced
+        the directory's entire DACL with one ACE nobody's running token
+        actually held, making the directory unwritable even to the process
+        that had just created it (confirmed live: `ensure_state_tree`
+        failed on its very next line, writing `contacts.json`, and even
+        `icacls`/`takeown` came back Access Denied afterwards - recovered
+        only because the *owner* SID, set automatically at creation, still
+        carried implicit WRITE_DAC). The token SID is always the one the
+        current process can actually act as - see DECISIONS.md."""
+        try:
+            token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+            user, _attrs = win32security.GetTokenInformation(token, win32security.TokenUser)
+            inherit_flags = ntsecuritycon.CONTAINER_INHERIT_ACE | ntsecuritycon.OBJECT_INHERIT_ACE
+            dacl = win32security.ACL()
+            dacl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION, inherit_flags, ntsecuritycon.FILE_ALL_ACCESS, user
+            )
+            security_descriptor = win32security.GetFileSecurity(
+                str(path), win32security.DACL_SECURITY_INFORMATION
+            )
+            security_descriptor.SetSecurityDescriptorDacl(1, dacl, 0)
+            win32security.SetFileSecurity(
+                str(path), win32security.DACL_SECURITY_INFORMATION, security_descriptor
+            )
+            return True
+        except Exception:
+            logger.warning("restrict_directory_to_current_user failed for %r", path, exc_info=True)
+            return False
+
     def os_build(self) -> str:
         build = sys.getwindowsversion().build
         if build >= 22000:
@@ -227,5 +271,6 @@ class WindowsAdapter:
             "notify",
             "screenshot",
             "convert_docx_to_pdf",
+            "restrict_directory_to_current_user",
         }
         return caps

@@ -112,6 +112,14 @@ class LinuxAdapter:
         # as "can't verify" and proceed, not as a hard failure.
         raise UnsupportedCapability("verify_hotkey_available needs XGrabKey (not implemented)")
 
+    def restrict_directory_to_current_user(self, path: Path) -> bool:
+        try:
+            path.chmod(0o700)
+            return True
+        except OSError:
+            logger.warning("restrict_directory_to_current_user failed for %r", path, exc_info=True)
+            return False
+
     def os_build(self) -> str:
         return f"Linux {platform.release()} ({'X11' if _is_x11() else 'Wayland'})"
 
@@ -128,6 +136,7 @@ class LinuxAdapter:
             "running_processes",
             "open_default_browser",
             "running_browsers",
+            "restrict_directory_to_current_user",
         }
         if _is_x11() and _have("wmctrl"):
             caps |= {"list_windows", "focus_window"}
