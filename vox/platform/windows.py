@@ -20,6 +20,7 @@ import win32api
 import win32com.client
 import win32con
 import win32gui
+import win32process
 import win32security
 from PIL import ImageGrab
 
@@ -88,11 +89,37 @@ class WindowsAdapter:
         try:
             hwnd = int(handle)
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(hwnd)
+            self._force_foreground(hwnd)
             return True
         except Exception:
             logger.warning("focus_window failed", exc_info=True)
             return False
+
+    def _force_foreground(self, hwnd: int) -> None:
+        """Plain `SetForegroundWindow` is denied silently by Windows unless
+        the calling thread already shares an input queue with whichever
+        thread currently owns the foreground window - confirmed live with a
+        scripted open/click/close loop against the command bar (a Tk window
+        created on a background thread in response to a global hotkey): in
+        2 of 5 rounds, a real click landed on the new window but
+        `GetForegroundWindow()` still named the previous window afterward,
+        leaving the entry with no real OS keyboard focus so Escape/Return
+        never reached it even though Tk's own `focus_set()` had already
+        "succeeded". `AttachThreadInput` is the documented Win32 workaround:
+        it makes this thread and the foreground thread share one input
+        queue for the duration of the call, which satisfies the check
+        `SetForegroundWindow` uses to decide whether to honour the request."""
+        fg_hwnd = win32gui.GetForegroundWindow()
+        fg_thread = win32process.GetWindowThreadProcessId(fg_hwnd)[0] if fg_hwnd else 0
+        current_thread = win32api.GetCurrentThreadId()
+        attached = bool(fg_thread and fg_thread != current_thread)
+        if attached:
+            win32process.AttachThreadInput(current_thread, fg_thread, True)
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                win32process.AttachThreadInput(current_thread, fg_thread, False)
 
     def find_installed_app(self, target: Any) -> str | None:
         # Registry App Paths / Start Menu scan lands with the resolver in

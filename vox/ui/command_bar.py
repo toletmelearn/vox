@@ -15,6 +15,8 @@ import logging
 import tkinter as tk
 from collections.abc import Callable
 
+from vox.platform import get_adapter
+from vox.platform.base import UnsupportedCapability
 from vox.router import tier0_grammar
 from vox.tools.registry import ToolResult
 
@@ -161,5 +163,27 @@ class CommandBar:
         h = root.winfo_reqheight()
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         root.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh // 4}")
+
+        # Tk's own focus_set()/focus_force() only ever set Tk-internal
+        # keyboard focus - they don't call SetForegroundWindow, so Windows
+        # can silently deny real OS input focus to a window created on a
+        # background thread (this listener fires from the hotkey's own
+        # thread, not the main thread). Force an actual paint with update()
+        # first so the window genuinely exists on screen before asking the
+        # OS to foreground it, then let the platform adapter do the
+        # OS-specific part (CLAUDE.md invariant 4) - the same
+        # SetForegroundWindow call the "focus window" voice tool already
+        # uses, which on Windows also works around the foreground-lock
+        # timeout that made this flaky (see platform/windows.py).
+        root.update()
+        root.lift()
+        root.focus_force()
+        entry.focus_set()
+        try:
+            get_adapter().focus_window(root.winfo_id())
+        except UnsupportedCapability:
+            pass
+        except Exception:
+            logger.debug("could not force OS-level foreground focus", exc_info=True)
 
         root.mainloop()
