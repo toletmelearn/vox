@@ -15,7 +15,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
-from vox.security.jail import resolve_in_jail, sanitize_filename
+from vox.security.jail import ParentKey, resolve_in_jail, sanitize_filename
 from vox.tools.registry import ToolResult, tool
 
 logger = logging.getLogger("vox.tools.documents")
@@ -33,11 +33,14 @@ def _ensure_suffix(leaf: str, suffix: str) -> str:
         "entry in `sections` is a single string formatted as "
         "'Heading|Body text for that section.' (a literal pipe character "
         "separates the two) - do not omit the body half, and do not put the "
-        "heading and body in separate list entries."
+        "heading and body in separate list entries. `parent` is one of "
+        "desktop|documents|downloads|workdir - set it to match wherever the "
+        "user said to put the file (e.g. 'on desktop' -> parent='desktop'); "
+        "defaults to documents if the user didn't say."
     ),
 )
 def create_word_document(
-    filename: str, title: str, sections: list[str], parent: str = "documents"
+    filename: str, title: str, sections: list[str], parent: ParentKey = "documents"
 ) -> ToolResult:
     resolved = resolve_in_jail(filename, parent_key=parent)
     leaf = _ensure_suffix(sanitize_filename(resolved.name), ".docx")
@@ -65,11 +68,14 @@ def create_word_document(
     description=(
         "Create a .pdf with a title and body paragraphs. Each entry in "
         "`paragraphs` is one paragraph of plain body text - write full, "
-        "informative sentences, not headings alone."
+        "informative sentences, not headings alone. `parent` is one of "
+        "desktop|documents|downloads|workdir - set it to match wherever the "
+        "user said to put the file (e.g. 'on desktop' -> parent='desktop'); "
+        "defaults to documents if the user didn't say."
     ),
 )
 def create_pdf(
-    filename: str, title: str, paragraphs: list[str], parent: str = "documents"
+    filename: str, title: str, paragraphs: list[str], parent: ParentKey = "documents"
 ) -> ToolResult:
     resolved = resolve_in_jail(filename, parent_key=parent)
     leaf = _ensure_suffix(sanitize_filename(resolved.name), ".pdf")

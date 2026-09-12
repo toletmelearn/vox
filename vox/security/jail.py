@@ -7,10 +7,18 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Literal
 
 from vox.config import get_settings
 
 PARENT_KEYS = ("desktop", "documents", "downloads", "workdir")
+
+# Same four values as PARENT_KEYS, as a type - tools import this for their
+# `parent` parameter so its JSON schema (what Tier 1 actually sees) carries
+# an explicit enum instead of an opaque `str`. Keep in sync with PARENT_KEYS
+# by hand; a mismatch would only ever narrow what the type-checker accepts,
+# never widen what resolve_in_jail() enforces at runtime.
+ParentKey = Literal["desktop", "documents", "downloads", "workdir"]
 
 _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {
     f"LPT{i}" for i in range(1, 10)

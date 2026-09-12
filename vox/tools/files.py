@@ -8,7 +8,7 @@ import send2trash
 
 from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
-from vox.security.jail import jail_roots, resolve_in_jail, sanitize_filename
+from vox.security.jail import ParentKey, jail_roots, resolve_in_jail, sanitize_filename
 from vox.tools.registry import ToolResult, tool
 
 logger = logging.getLogger("vox.tools.files")
@@ -17,9 +17,14 @@ logger = logging.getLogger("vox.tools.files")
 @tool(
     name="create_folder",
     risk="safe",
-    description="Create a new folder. Use for 'make a folder called X'.",
+    description=(
+        "Create a new folder. Use for 'make a folder called X'. `parent` is "
+        "one of desktop|documents|downloads|workdir - set it to match "
+        "wherever the user said to put it (e.g. 'on desktop' -> "
+        "parent='desktop'); defaults to desktop if the user didn't say."
+    ),
 )
-def create_folder(name: str, parent: str = "desktop") -> ToolResult:
+def create_folder(name: str, parent: ParentKey = "desktop") -> ToolResult:
     resolved = resolve_in_jail(name, parent_key=parent)
     leaf = sanitize_filename(resolved.name)
     final = resolved.with_name(leaf)
@@ -34,9 +39,14 @@ def create_folder(name: str, parent: str = "desktop") -> ToolResult:
 @tool(
     name="create_text_file",
     risk="safe",
-    description="Create a plain text file with optional content.",
+    description=(
+        "Create a plain text file with optional content. `parent` is one of "
+        "desktop|documents|downloads|workdir - set it to match wherever the "
+        "user said to put it (e.g. 'on desktop' -> parent='desktop'); "
+        "defaults to desktop if the user didn't say."
+    ),
 )
-def create_text_file(name: str, content: str = "", parent: str = "desktop") -> ToolResult:
+def create_text_file(name: str, content: str = "", parent: ParentKey = "desktop") -> ToolResult:
     resolved = resolve_in_jail(name, parent_key=parent)
     leaf = sanitize_filename(resolved.name)
     if "." not in leaf:
