@@ -694,3 +694,69 @@ crash. The actual button clicks and key-combo captures need a follow-up
 session with a human at the keyboard, same as Phase 3's real hold-to-talk
 verification.
 
+### Real bug found via live testing: the text hotkey (ctrl+shift+k) could never fire, at all, ever
+Follow-up live session to the item above: the human found that ctrl+shift+k
+opened the command bar only while vox's own console window happened to be
+focused, and did nothing with any other window focused. Checked whether the
+voice hotkey (ctrl+shift+space) had the same problem — it did not; it fires
+correctly regardless of which window has focus.
+
+Root cause, confirmed empirically (not guessed) with a real pynput
+`Listener` and synthetic key delivery via `keyboard.Controller`, both with
+and without the fix, both with a real other application (`notepad.exe`)
+holding real, verified (`GetForegroundWindow`/`GetWindowThreadProcessId`
+PID match) foreground focus: on Windows, pynput reports a plain letter key
+as a `KeyCode` carrying whatever `ToUnicode` produces for the *currently
+held modifiers*. With ctrl+alt or ctrl+shift held, `ToUnicode` does not
+return the bare letter — probed values included a bare-vk `KeyCode` with
+`char=None` and, for ctrl+k specifically, the control character `'\x0b'`.
+`parse_chord`'s handling of a plain-letter token (`vox/audio/capture.py`)
+builds the chord's expected key via `KeyCode.from_char('k')`
+(`char='k'`, `vk=None`) — which can never equal any of those real event
+values, so `ChordTracker.is_held()` never saw the letter key as satisfied
+and the chord could never become fully held. `TapHotkeyListener` and
+`HotkeyCapture` are otherwise identical in how they register pynput's
+global `Listener` (verified line-by-line; both use the same low-level
+`SetWindowsHookEx` hook via pynput internally, which is unrelated to window
+focus) — the difference was entirely in which *default chord* each one
+happened to use. Voice's default, `ctrl+shift+space`, worked by accident:
+`space` is one of pynput's hardcoded "special keys" (`Key.space`), always
+reported as that same enum member regardless of modifier state, so it
+never hit this mismatch. Text's default, `ctrl+shift+k`, uses a plain
+letter and hit it on every single press.
+
+The apparent "works only when the console has focus" symptom was a red
+herring from how the human happened to test it, not a real focus
+dependency — the chord literally could never become fully held on this
+machine, console-focused or not; direct code inspection and the real
+`Listener`/`Controller` probe above found no focus-dependent code path
+anywhere in either listener.
+
+Fix: added `canonicalize_key()` to `vox/audio/capture.py`, used by both
+`HotkeyCapture._on_press`/`_on_release` and (imported)
+`TapHotkeyListener._on_press`/`_on_release` in `vox/ui/hotkeys.py`. It
+calls pynput's own `Listener.canonical()` — a real, cross-platform pynput
+API, not vox platform-specific code — which strips modifier state back to
+a key's un-shifted base character, but only for `KeyCode` instances;
+`Key` enum members (space, esc, ctrl_l, ctrl_r, ...) are passed through
+unchanged, since canonicalizing those would collapse `ctrl_l`/`ctrl_r` to
+the generic `Key.ctrl`, which is not a member of `_MODIFIER_ALIASES`'s
+`{ctrl_l, ctrl_r}` groups and would break modifier matching instead of
+fixing anything.
+
+Verified for real, twice: (1) a script that starts a real `TapHotkeyListener`
+and real pynput `Listener`, launches `notepad.exe`, forces and confirms (by
+PID, not by assumption) that Notepad holds actual foreground focus, then
+sends a synthetic ctrl+shift+k via `keyboard.Controller` — fires correctly
+against this branch, and reproducibly fails to fire (`fired == []`) against
+the pre-fix code via `git stash`. (2) `tests/test_capture.py`'s
+`test_hotkey_capture_recognises_letter_chord_despite_modifier_skewed_char`
+and `tests/test_hotkeys.py`'s
+`test_tap_hotkey_listener_recognises_letter_chord_despite_modifier_skewed_char`
+lock in the fix with a stubbed `.canonical()` (a real pynput `Listener`
+needs a live keyboard hook backend that a unit test must not stand up).
+209 tests pass (9 new; 4 pre-existing Phase 6 memory-store failures in
+`test_app.py` are unrelated — confirmed present on a clean `git stash`
+checkout before this fix, not introduced by it); `mypy --strict` clean on
+`vox/tools`, `vox/security`, and the whole `vox/` package; grep gate clean.
+

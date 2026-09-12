@@ -59,6 +59,31 @@ def parse_chord(chord: str) -> list[frozenset[_Key]]:
     return groups
 
 
+def canonicalize_key(listener: keyboard.Listener, key: _Key) -> _Key:
+    """Normalises a raw key event to its modifier-independent form.
+
+    On Windows, pynput reports a letter/digit key as a `KeyCode` carrying
+    whatever `ToUnicode` produces for the CURRENTLY HELD modifiers - e.g.
+    ctrl+alt+k arrives with `char=None` (not `'k'`), because Ctrl+Alt
+    changes what the key types. A chord token built by `parse_chord()` via
+    `KeyCode.from_char('k')` therefore never equals the real event while a
+    modifier is held, so `ChordTracker.is_held()`/`is_chord_key()` never
+    recognises the key and the chord can never fire. `listener.canonical()`
+    (a real pynput API, not vox platform-specific code) strips modifier
+    state back to the key's un-shifted base character, which does match.
+
+    `Key` enum members (space, esc, ctrl_l, ...) must be passed through
+    unchanged, not canonicalized: pynput already reports those identically
+    regardless of modifier state (this is why ctrl+shift+space, this
+    project's voice hotkey, never showed this bug), and `canonical()` would
+    collapse e.g. `ctrl_l`/`ctrl_r` to the generic `Key.ctrl`, which isn't a
+    member of `_MODIFIER_ALIASES`'s `{ctrl_l, ctrl_r}` groups and would
+    break modifier matching instead of fixing anything."""
+    if isinstance(key, keyboard.KeyCode):
+        return listener.canonical(key)
+    return key
+
+
 class ChordTracker:
     """Tracks currently-held keys and reports whether a chord is fully
     held."""
@@ -183,6 +208,8 @@ class HotkeyCapture:
     def _on_press(self, key: _Key | None) -> None:
         if key is None:
             return
+        if self._listener is not None:
+            key = canonicalize_key(self._listener, key)
         self._tracker.press(key)
         if not self._recording and self._tracker.is_held():
             self._recording = True
@@ -192,6 +219,8 @@ class HotkeyCapture:
     def _on_release(self, key: _Key | None) -> None:
         if key is None:
             return
+        if self._listener is not None:
+            key = canonicalize_key(self._listener, key)
         was_relevant = self._recording and self._tracker.is_chord_key(key)
         self._tracker.release(key)
         if was_relevant:

@@ -219,6 +219,25 @@ Next up: **Phase 6 — Memory store**. Needed spec sections: check Section 10 Ph
      longer value set once end-user hardware is measured. **Open risk,
      carried forward** — same status as the Phase 3 Whisper latency entry.
 
+- 2026-09-12 — Phase 5 follow-up live-testing session. Found and fixed a
+  real bug: the text hotkey (`ctrl+shift+k`) could never open the command
+  bar, on any window, ever — not a focus issue as it first appeared, but
+  `parse_chord`'s plain-letter handling in `vox/audio/capture.py` building
+  a `KeyCode` that can never equal what pynput's real Windows hook reports
+  for a letter key while Ctrl/Alt/Shift are held. Voice's default chord
+  (`ctrl+shift+space`) was unaffected only because `space` is one of
+  pynput's hardcoded special keys. Fixed with a shared `canonicalize_key()`
+  helper (uses pynput's own `Listener.canonical()`) applied in both
+  `HotkeyCapture` and `TapHotkeyListener`. Verified twice: a real pynput
+  `Listener` + real `notepad.exe` holding confirmed (by PID) foreground
+  focus + synthetic key delivery, reproducibly failing pre-fix and passing
+  post-fix; and two new regression tests
+  (`tests/test_capture.py`, new `tests/test_hotkeys.py`). 209 tests pass (9
+  new); mypy --strict and the grep gate remain clean. Full detail in
+  DECISIONS.md. Phase 5's live-GUI-interaction gap (button clicks, command
+  bar typing, hotkey-capture-in-settings) is still open, same as before
+  this session.
+
 - 2026-09-11 — Phase 5 built: `security/confirm.py` (destructive-risk
   confirm modal + rollback, the medium-risk undo window, the process-wide
   kill switch), `ui/tray.py` (pystray icon, 4 states, menu, balloon

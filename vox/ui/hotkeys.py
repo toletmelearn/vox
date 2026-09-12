@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from pynput import keyboard
 
-from vox.audio.capture import ChordTracker, parse_chord
+from vox.audio.capture import ChordTracker, canonicalize_key, parse_chord
 
 logger = logging.getLogger("vox.ui.hotkeys")
 
@@ -34,6 +34,8 @@ class TapHotkeyListener:
     def _on_press(self, key: _Key | None) -> None:
         if key is None:
             return
+        if self._listener is not None:
+            key = canonicalize_key(self._listener, key)
         self._tracker.press(key)
         if self._tracker.is_held():
             self._armed = True
@@ -41,6 +43,8 @@ class TapHotkeyListener:
     def _on_release(self, key: _Key | None) -> None:
         if key is None:
             return
+        if self._listener is not None:
+            key = canonicalize_key(self._listener, key)
         was_armed = self._armed and self._tracker.is_chord_key(key)
         self._tracker.release(key)
         if was_armed:

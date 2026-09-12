@@ -10,7 +10,17 @@ import numpy as np
 import pytest
 from pynput import keyboard
 
-from vox.audio.capture import ChordTracker, HotkeyCapture, Recorder, parse_chord
+from vox.audio.capture import ChordTracker, HotkeyCapture, Recorder, canonicalize_key, parse_chord
+
+
+class _StubListener:
+    """Stands in for a real pynput Listener's .canonical(), which needs a
+    live keyboard hook backend (real ToUnicode/layout tables) that a test
+    must not stand up. Mirrors the one behaviour canonicalize_key relies on:
+    stripping modifier state back to the key's un-shifted base char."""
+
+    def canonical(self, key: keyboard.KeyCode) -> keyboard.KeyCode:
+        return keyboard.KeyCode.from_char("k")
 
 
 def test_parse_chord_ctrl_alt_space():
@@ -58,6 +68,46 @@ def test_chord_tracker_is_chord_key():
     assert tracker.is_chord_key(keyboard.Key.ctrl_l)
     assert tracker.is_chord_key(keyboard.Key.alt_r)
     assert not tracker.is_chord_key(keyboard.Key.shift_l)
+
+
+def test_canonicalize_key_normalises_keycode_via_listener():
+    # A real Ctrl+Alt+K event arrives as a bare-vk KeyCode with no char
+    # (see canonicalize_key's docstring) - the stub mimics that mismatch.
+    raw = keyboard.KeyCode(vk=75)
+    assert canonicalize_key(_StubListener(), raw) == keyboard.KeyCode.from_char("k")
+
+
+def test_canonicalize_key_leaves_key_enum_members_untouched():
+    # Must NOT canonicalize Key members - it would collapse ctrl_l/ctrl_r to
+    # the generic Key.ctrl and break _MODIFIER_ALIASES matching.
+    assert canonicalize_key(_StubListener(), keyboard.Key.ctrl_l) is keyboard.Key.ctrl_l
+    assert canonicalize_key(_StubListener(), keyboard.Key.space) is keyboard.Key.space
+
+
+def test_hotkey_capture_recognises_letter_chord_despite_modifier_skewed_char(mocker):
+    """Regression test for the real bug: ctrl+alt+k (and this project's
+    actual ctrl+shift+k text hotkey) never fired because the real pynput
+    event for the letter key under held modifiers doesn't equal
+    KeyCode.from_char('k') from parse_chord. Without canonicalize_key in
+    _on_press/_on_release, this chord can never become fully held."""
+    mocker.patch("vox.audio.capture.sd.InputStream")
+    recorded: list[np.ndarray] = []
+
+    capture = HotkeyCapture("ctrl+alt+k", on_recorded=recorded.append)
+    capture._listener = _StubListener()  # type: ignore[assignment]
+
+    capture._on_press(keyboard.Key.ctrl_l)
+    capture._on_press(keyboard.Key.alt_l)
+    # The real hook delivers a bare-vk KeyCode here, not KeyCode.from_char("k").
+    capture._on_press(keyboard.KeyCode(vk=75))
+    assert capture._recording
+
+    capture._on_release(keyboard.KeyCode(vk=75))
+    assert not capture._recording
+    capture._work.join()
+    assert len(recorded) == 1
+    capture._listener = None  # _StubListener has no .stop(); never a real listener here
+    capture.stop()
 
 
 def test_recorder_start_stop_uses_mocked_stream(mocker):
