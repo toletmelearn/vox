@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -31,11 +32,39 @@ CREATE TABLE IF NOT EXISTS events (
 
 
 class AuditLog:
+    """`execute_tool_call` (app.py) calls `get_audit_log()` from whichever
+    thread is running a command - the pystray setup thread for the text
+    hotkey/command bar, and HotkeyCapture's dedicated worker thread (Phase 3)
+    for voice - and a single `sqlite3.Connection` can only ever be used from
+    the thread that created it. A module-level singleton connection meant
+    the *first* caller's thread silently "claimed" it, and every other
+    thread's later write crashed with sqlite3.ProgrammingError - confirmed
+    live. Fixed with one real connection per thread (`threading.local`),
+    each opened with WAL journaling and a busy timeout so the rare case of
+    two threads writing at the same moment retries instead of raising
+    "database is locked", rather than a single shared connection with
+    `check_same_thread=False` papering over the same race."""
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, isolation_level=None)
-        self._conn.execute(_SCHEMA)
+        self._local = threading.local()
+        self._connect().execute(_SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.db_path, isolation_level=None, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            self._local.conn = conn
+        return conn
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Thread-local connection, exposed as an attribute for tests that
+        inspect the current thread's rows directly."""
+        return self._connect()
 
     def write_pending(
         self,
@@ -82,19 +111,28 @@ class AuditLog:
         )
 
     def close(self) -> None:
-        self._conn.close()
+        """Closes only the calling thread's connection. Other threads keep
+        theirs open; they're daemon worker threads that die with the
+        process, per this project's threading model."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
 
 _audit_log: AuditLog | None = None
+_audit_log_lock = threading.Lock()
 
 
 def get_audit_log() -> AuditLog:
     global _audit_log
     if _audit_log is None:
-        from vox.config import get_settings
+        with _audit_log_lock:
+            if _audit_log is None:  # re-check: another thread may have won the race
+                from vox.config import get_settings
 
-        state_dir = Path(get_settings().paths.state_dir).expanduser()
-        _audit_log = AuditLog(state_dir / "audit.db")
+                state_dir = Path(get_settings().paths.state_dir).expanduser()
+                _audit_log = AuditLog(state_dir / "audit.db")
     return _audit_log
 
 
