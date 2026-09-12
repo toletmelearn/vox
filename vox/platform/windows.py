@@ -88,6 +88,21 @@ class WindowsAdapter:
     def focus_window(self, handle: int | str) -> bool:
         try:
             hwnd = int(handle)
+            # SetForegroundWindow (and ShowWindow's SW_RESTORE) require a
+            # true top-level window. Tkinter's `winfo_id()` - the handle
+            # command_bar.py passes here for its own just-created window -
+            # returns the HWND of an internal "TkChild" control nested
+            # inside the real top-level "TkTopLevel" window, not that
+            # top-level window itself. Confirmed live: calling
+            # SetForegroundWindow on that child hwnd fails every time,
+            # returning FALSE with GetLastError() left at 0 - Windows
+            # doesn't set an error code for this rejection, which is
+            # exactly pywin32's "No error message is available". Walking up
+            # to the real root via GetAncestor(GA_ROOT) before doing
+            # anything fixes it; verified live both against a bare new
+            # window and against a genuinely different foreground process
+            # (notepad.exe) beforehand.
+            hwnd = win32gui.GetAncestor(hwnd, win32con.GA_ROOT) or hwnd
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
             self._force_foreground(hwnd)
             return True
@@ -108,7 +123,10 @@ class WindowsAdapter:
         "succeeded". `AttachThreadInput` is the documented Win32 workaround:
         it makes this thread and the foreground thread share one input
         queue for the duration of the call, which satisfies the check
-        `SetForegroundWindow` uses to decide whether to honour the request."""
+        `SetForegroundWindow` uses to decide whether to honour the request.
+        Callers must pass a real top-level hwnd (see `focus_window`'s
+        GetAncestor(GA_ROOT) resolution) - SetForegroundWindow silently
+        refuses a child window handle regardless of this workaround."""
         fg_hwnd = win32gui.GetForegroundWindow()
         fg_thread = win32process.GetWindowThreadProcessId(fg_hwnd)[0] if fg_hwnd else 0
         current_thread = win32api.GetCurrentThreadId()
