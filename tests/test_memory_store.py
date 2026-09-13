@@ -3,6 +3,7 @@ completely separate from security/audit.py's append-only audit.db (spec
 Section 6C)."""
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 from vox.memory.store import MemoryStore, artifact_kind
@@ -16,6 +17,44 @@ def test_artifact_kind_uses_tool_table_first(memory_store):
 def test_artifact_kind_falls_back_to_suffix():
     assert artifact_kind("some_future_tool", "C:/x/report.pdf") == "pdf"
     assert artifact_kind("some_future_tool", "C:/x/noext") == "file"
+
+
+def test_record_artifact_from_a_different_thread_than_the_store_was_created_on(tmp_path):
+    """Regression test for a real live bug, identical to security/audit.py's
+    AuditLog fix: MemoryStore opened one sqlite3.Connection at construction
+    time, usable only from that thread. record_execution() - called from
+    HotkeyCapture's dedicated voice worker thread - calling record_artifact()
+    on a store constructed on a different thread (the pystray setup thread)
+    crashed with sqlite3.ProgrammingError. Confirmed live: a real voice
+    command ("make a word file called memory test") created the file
+    correctly, but its memory row silently never landed because the
+    exception was swallowed by app.py's _record_execution_safely. Reproduces
+    the exact shape: construct on this thread, write from a second real
+    thread."""
+    store = MemoryStore(tmp_path / "memory.db")
+    errors: list[BaseException] = []
+
+    def _write_from_other_thread() -> None:
+        try:
+            store.record_artifact(
+                path="C:/Desktop/memory test.docx",
+                kind="docx",
+                title="memory test.docx",
+                source_transcript="make a word file called memory test",
+            )
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion below, not swallowed
+            errors.append(exc)
+
+    thread = threading.Thread(target=_write_from_other_thread)
+    thread.start()
+    thread.join()
+
+    assert errors == [], f"record_artifact raised on a different thread: {errors!r}"
+    rows = store.recent_artifacts()
+    assert len(rows) == 1
+    assert rows[0].title == "memory test.docx"
+
+    store.close()
 
 
 def test_record_and_query_activity(memory_store: MemoryStore):

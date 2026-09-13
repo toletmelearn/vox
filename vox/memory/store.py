@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,11 +101,40 @@ class ArtifactRow:
 
 
 class MemoryStore:
+    """`record_execution` (memory/tracking.py) calls `get_memory_store()`
+    from whichever thread is running a command - the pystray setup thread
+    for the text hotkey/command bar, and HotkeyCapture's dedicated worker
+    thread for voice - and a single `sqlite3.Connection` can only ever be
+    used from the thread that created it. Identical bug and identical fix to
+    `security/audit.py`'s `AuditLog` (see that module's docstring and
+    DECISIONS.md): confirmed live, a real voice command's `record_artifact`
+    call crashed with `sqlite3.ProgrammingError` because the connection had
+    been created on a different thread, and the exception was swallowed by
+    `app.py`'s `_record_execution_safely` - meaning `ok=True` was reported
+    to the user (the file really was created) while its memory row silently
+    never landed. Fixed with one real connection per thread
+    (`threading.local`), same WAL + busy-timeout settings as `AuditLog`."""
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, isolation_level=None)
-        self._conn.executescript(_SCHEMA)
+        self._local = threading.local()
+        self._connect().executescript(_SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.db_path, isolation_level=None, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            self._local.conn = conn
+        return conn
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Thread-local connection, exposed as an attribute for tests that
+        inspect the current thread's rows directly."""
+        return self._connect()
 
     # -- activity ------------------------------------------------------
     def record_activity(
@@ -245,19 +275,28 @@ class MemoryStore:
         return 1
 
     def close(self) -> None:
-        self._conn.close()
+        """Closes only the calling thread's connection. Other threads keep
+        theirs open; they're daemon worker threads that die with the
+        process, per this project's threading model."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
 
 _store: MemoryStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_memory_store() -> MemoryStore:
     global _store
     if _store is None:
-        from vox.config import get_settings
+        with _store_lock:
+            if _store is None:  # re-check: another thread may have won the race
+                from vox.config import get_settings
 
-        state_dir = Path(get_settings().paths.state_dir).expanduser()
-        _store = MemoryStore(state_dir / "memory" / "memory.db")
+                state_dir = Path(get_settings().paths.state_dir).expanduser()
+                _store = MemoryStore(state_dir / "memory" / "memory.db")
     return _store
 
 
