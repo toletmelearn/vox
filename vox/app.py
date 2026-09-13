@@ -12,10 +12,13 @@ import numpy as np
 import vox.tools  # noqa: F401 - import populates REGISTRY
 from vox.config import Settings, get_settings
 from vox.logging_setup import setup_logging
+from vox.memory.context import get_context
+from vox.memory.tracking import record_execution
+from vox.memory.tree import run_startup_maintenance
 from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
 from vox.router import tier0_grammar, tier1_local
-from vox.router.base import RouteResult, ToolCall, Transcript
+from vox.router.base import ContextAction, RouteResult, ToolCall, Transcript
 from vox.security import confirm
 from vox.security.audit import get_audit_log
 from vox.security.jail import JailViolation
@@ -34,7 +37,9 @@ def execute_tool_call(
     caught here and recorded as 'rejected'."""
     registered = REGISTRY.get(call.name)
     if registered is None:
-        return ToolResult(ok=False, speech="I don't have that tool.")
+        result = ToolResult(ok=False, speech="I don't have that tool.")
+        record_execution(call, transcript=transcript, outcome="failed", result=result)
+        return result
 
     audit = get_audit_log()
     row_id = audit.write_pending(
@@ -53,7 +58,9 @@ def execute_tool_call(
         # changes here.
         if not confirm.confirm_destructive(call.name, call.args):
             audit.update_status(row_id, status="cancelled")
-            return ToolResult(ok=False, speech="Cancelled.")
+            result = ToolResult(ok=False, speech="Cancelled.")
+            record_execution(call, transcript=transcript, outcome="cancelled", result=result)
+            return result
 
     start = time.monotonic()
     try:
@@ -61,11 +68,15 @@ def execute_tool_call(
         result = registered.fn(**validated.model_dump())
     except JailViolation as exc:
         audit.update_status(row_id, status="rejected", error=str(exc))
-        return ToolResult(ok=False, speech="That location isn't allowed.")
+        result = ToolResult(ok=False, speech="That location isn't allowed.")
+        record_execution(call, transcript=transcript, outcome="failed", result=result)
+        return result
     except Exception as exc:  # noqa: BLE001 - tools must not raise; this is the backstop
         logger.error("tool %s raised unexpectedly", call.name, exc_info=True)
         audit.update_status(row_id, status="failed", error=str(exc))
-        return ToolResult(ok=False, speech="Something went wrong.")
+        result = ToolResult(ok=False, speech="Something went wrong.")
+        record_execution(call, transcript=transcript, outcome="failed", result=result)
+        return result
 
     duration_ms = int((time.monotonic() - start) * 1000)
     audit.update_status(
@@ -79,22 +90,47 @@ def execute_tool_call(
         settings = get_settings()
         confirm.arm_undo(call.name, result.artifact_path, settings.security.undo_window_s)
 
+    record_execution(call, transcript=transcript, outcome="ok" if result.ok else "failed", result=result)
     return result
+
+
+_CONTEXT_ACTION_TOOL: dict[ContextAction, str] = {
+    "open": "open_path",
+    "convert_to_pdf": "convert_to_pdf",
+}
+
+
+def _resolve_context_action(action: ContextAction, settings: Settings) -> RouteResult | None:
+    """Resolve a Tier 0 context-pronoun match ("open it", "make that a pdf")
+    against the real Context singleton (spec Section 6C). Returns None -
+    caller keeps the original clarification - when there's no remembered
+    artifact, or it's past `memory.context_ttl_minutes`; deliberately checked
+    without touching the context first, so an expired artifact stays expired
+    rather than being silently refreshed by the act of asking about it."""
+    artifact = get_context().last_artifact
+    if artifact is None or get_context().is_expired(settings.memory.context_ttl_minutes):
+        return None
+    return RouteResult(
+        call=ToolCall(name=_CONTEXT_ACTION_TOOL[action], args={"path": artifact.path}),
+        confidence=0.95,
+        tier="tier0",
+    )
 
 
 def route_and_execute(transcript: Transcript) -> ToolResult:
     """The shared pipeline both input modes feed (spec Section 6D: "Both
     produce a Transcript... do not fork the pipeline"). Escalation logic
     (spec Section 7): a low-confidence transcript is refused before
-    routing; Tier 0 first. A Tier 0 clarification (its context-pronoun
-    patterns, e.g. "make that a PDF" with no remembered artifact) is
-    returned as-is and never forwarded to Tier 1 - Tier 1 has no more
-    context than Tier 0 does until Phase 6's memory store exists, so
-    escalating would just trade one unresolved pronoun for a fabricated
-    guess (spec Section 7, tier0_grammar module docstring). Only a bare
-    "no match" from Tier 0 escalates. Tier 2 is not built until later, so
-    anything Tier 1 can't resolve (or Tier 1 being unavailable) ends in
-    "didn't understand" for now."""
+    routing; Tier 0 first. A Tier 0 clarification whose context_action
+    resolves against the real Context singleton (spec Section 6C) becomes a
+    real call here; one that doesn't resolve (no remembered artifact, or
+    past context_ttl_minutes) is returned as-is and never forwarded to Tier
+    1 - Tier 1 has no more context than Tier 0 does, so escalating would
+    just trade one unresolved pronoun for a fabricated guess (spec Section
+    7, tier0_grammar module docstring). Only a bare "no match" from Tier 0
+    escalates. Tier 2 is not built until later, so anything Tier 1 can't
+    resolve (or Tier 1 being unavailable) ends in "didn't understand" for
+    now."""
     confirm.get_kill_switch().clear()  # a new command always starts un-aborted
 
     settings = get_settings()
@@ -102,6 +138,11 @@ def route_and_execute(transcript: Transcript) -> ToolResult:
         return ToolResult(ok=False, speech="Sorry, I didn't catch that.")
 
     route_result = tier0_grammar.route(transcript.text)
+
+    if route_result.context_action is not None:
+        resolved = _resolve_context_action(route_result.context_action, settings)
+        if resolved is not None:
+            route_result = resolved
 
     if route_result.call is None and route_result.clarification is None:
         if tier1_local.is_available():
@@ -144,6 +185,7 @@ def bootstrap() -> Settings:
     settings = get_settings()
     setup_logging(settings)
     run_self_check(settings)
+    run_startup_maintenance(settings)  # spec Section 6C: create ~/.vox/ on first run, prune/sweep on every run
     return settings
 
 

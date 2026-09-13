@@ -1,12 +1,20 @@
 """Tier 0 grammar: regex rules tried in order, first match wins. Instant,
 offline, never guesses — a match always returns confidence 0.95 (spec
-Section 7). Patterns needing Context (the pronoun/last-artifact rules) are
-registered but always return a clarification, since Context itself is a
-Phase 6 deliverable; see DECISIONS.md.
+Section 7). This module stays pure and context-free by design (no
+`vox.memory` import, no singleton access - see tests/test_grammar.py's own
+docstring): the pronoun/last-artifact patterns ("open it", "make that a
+pdf") always return a clarification paired with `RouteResult.context_action`
+rather than resolving anything themselves. Only app.py's route_and_execute
+resolves that against the real Context singleton (spec Section 6C) - this
+module has no opinion on whether a remembered artifact exists or has
+expired.
 
-Patterns for open_target/play_on_target/compose_whatsapp_message/
-recall_activity are deferred to Phase 7/6, when those tools exist — matching
-them here would just dispatch to a tool the registry doesn't have yet.
+recall_activity is now wired (Phase 6's memory store exists) as a direct
+Tier 0 dispatch - spec Section 7's literal pattern, resolved deterministically
+with no model call. Patterns for open_target/play_on_target/
+compose_whatsapp_message are still deferred to Phase 7, when those tools
+exist — matching them here would just dispatch to a tool the registry
+doesn't have yet.
 """
 from __future__ import annotations
 
@@ -20,7 +28,24 @@ from vox.router.base import RouteResult, ToolCall
 _FILLER_PREFIX = re.compile(r"^(?:hey|ok|okay|please|computer)[\s,]+", re.IGNORECASE)
 _FILLER_INLINE = r"(?:please\s+|just\s+|can you\s+)*"
 _PARENT_ALT = r"(?P<parent>desktop|documents|downloads|workdir)"
+_PARENT_ALT_LEADING = r"(?P<parent_leading>desktop|documents|downloads|workdir)"
 _APP_ALT = r"(?P<app>chrome|edge|firefox|notepad|word|excel|calculator|explorer|vscode|terminal)"
+
+# A second imperative buried inside a captured name/filename (e.g. "...named
+# X and inside this make a word file...") means the utterance is really a
+# multi-step request our single-clause grammar can't represent - matching it
+# anyway would silently create something with a garbage name. Verbs drawn
+# from this module's own dispatch vocabulary above.
+_COMPOUND_MARKER = re.compile(
+    r"\band\b.*\b(?:make|create|new|open|search|google|play|send|download|"
+    r"message|msg|lock|take|convert|turn|stop|cancel)\b",
+    re.IGNORECASE,
+)
+_NO_MATCH = RouteResult(call=None, confidence=0.0, tier="none")
+
+
+def _is_compound(text: str) -> bool:
+    return bool(_COMPOUND_MARKER.search(text))
 
 # (raw phrase, canonical English verb). Word order matches English for all
 # of these, so a straight substitution is enough — "banao"/"bana do"
@@ -91,23 +116,31 @@ def _h_download_file(m: Match[str]) -> RouteResult:
 
 def _h_create_folder(m: Match[str]) -> RouteResult:
     name = _normalize_spoken_filename(m.group("name").strip())
-    parent = (m.group("parent") or "desktop").lower()
+    if _is_compound(name):
+        return _NO_MATCH
+    parent = (m.group("parent") or m.group("parent_leading") or "desktop").lower()
     return _call("create_folder", {"name": name, "parent": parent})
 
 
 def _h_create_folder_hindi(m: Match[str]) -> RouteResult:
     name = _normalize_spoken_filename(m.group("name").strip())
+    if _is_compound(name):
+        return _NO_MATCH
     return _call("create_folder", {"name": name, "parent": "desktop"})
 
 
 def _h_create_text_file(m: Match[str]) -> RouteResult:
     name = _normalize_spoken_filename(m.group("name").strip())
-    parent = (m.group("parent") or "desktop").lower()
+    if _is_compound(name):
+        return _NO_MATCH
+    parent = (m.group("parent") or m.group("parent_leading") or "desktop").lower()
     return _call("create_text_file", {"name": name, "parent": parent})
 
 
 def _h_create_word_document(m: Match[str]) -> RouteResult:
     filename = m.group("filename").strip()
+    if _is_compound(filename):
+        return _NO_MATCH
     return _call(
         "create_word_document",
         {"filename": filename, "title": filename, "sections": []},
@@ -116,6 +149,8 @@ def _h_create_word_document(m: Match[str]) -> RouteResult:
 
 def _h_create_pdf(m: Match[str]) -> RouteResult:
     filename = m.group("filename").strip()
+    if _is_compound(filename):
+        return _NO_MATCH
     return _call("create_pdf", {"filename": filename, "title": filename, "paragraphs": []})
 
 
@@ -144,11 +179,19 @@ def _h_stop_action(m: Match[str]) -> RouteResult:
 
 
 def _h_open_context_pronoun(m: Match[str]) -> RouteResult:
-    return _clarify("Which file do you mean?")
+    result = _clarify("Which file do you mean?")
+    result.context_action = "open"
+    return result
 
 
 def _h_convert_context_pronoun(m: Match[str]) -> RouteResult:
-    return _clarify("Which file do you mean?")
+    result = _clarify("Which file do you mean?")
+    result.context_action = "convert_to_pdf"
+    return result
+
+
+def _h_recall_activity(m: Match[str]) -> RouteResult:
+    return _call("recall_activity", {"query": m.string, "days": 7})
 
 
 _PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
@@ -192,7 +235,9 @@ _PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
     ),
     (
         re.compile(
-            rf"^{_FILLER_INLINE}(?:make|create|new)\s+(?:a\s+)?(?:new\s+)?folder\s+(?:called|named)?\s*"
+            rf"^{_FILLER_INLINE}(?:make|create|new)\s+(?:a\s+)?(?:new\s+)?folder\s+"
+            rf"(?:(?:on|in)\s+{_PARENT_ALT_LEADING}\s+(?:and\s+)?)?"
+            rf"(?:called|named)?(?:\s+it)?\s*"
             rf"(?P<name>.+?)(?:\s+(?:on|in)\s+{_PARENT_ALT})?$",
             re.IGNORECASE,
         ),
@@ -200,7 +245,9 @@ _PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
     ),
     (
         re.compile(
-            rf"^{_FILLER_INLINE}(?:make|create|new)\s+(?:a\s+)?(?:new\s+)?(?:text\s+)?file\s+(?:called|named)?\s*"
+            rf"^{_FILLER_INLINE}(?:make|create|new)\s+(?:a\s+)?(?:new\s+)?(?:text\s+)?file\s+"
+            rf"(?:(?:on|in)\s+{_PARENT_ALT_LEADING}\s+(?:and\s+)?)?"
+            rf"(?:called|named)?(?:\s+it)?\s*"
             rf"(?P<name>.+?)(?:\s+(?:on|in)\s+{_PARENT_ALT})?$",
             re.IGNORECASE,
         ),
@@ -235,8 +282,15 @@ _PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
         _h_open_context_pronoun,
     ),
     (
-        re.compile(r"^(?:make|convert|turn)\s+(?:that|it|this)\s+(?:in)?to\s+(?:a\s+)?pdf$", re.IGNORECASE),
+        re.compile(
+            r"^(?:make|convert|turn)\s+(?:that|it|this)\s+(?:(?:in)?to\s+)?(?:a\s+)?pdf$",
+            re.IGNORECASE,
+        ),
         _h_convert_context_pronoun,
+    ),
+    (
+        re.compile(r"^what did (?:i|you) do (?P<when>today|yesterday|this week)$", re.IGNORECASE),
+        _h_recall_activity,
     ),
 ]
 

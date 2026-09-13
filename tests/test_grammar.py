@@ -58,6 +58,19 @@ CASES: list[tuple[str, str | None, dict[str, object] | None]] = [
     ),
     # a topic-phrased request must NOT match Tier 0 (needs content generation)
     ("make a word file about the water cycle", None, None),
+    # a compound/multi-step command must NOT match Tier 0 - a second buried
+    # imperative ("...and inside this make a word file...") means the whole
+    # tail would otherwise be swallowed into the name (real live bug, see
+    # DECISIONS.md "Compound command silently became the folder name")
+    (
+        "make a folder on desktop and named it Amit Saxena and inside this "
+        "make a word file and in the word file make a question paper of "
+        "class 10 with help of chatgpt",
+        None,
+        None,
+    ),
+    ("create a file named notes and then open chrome", None, None),
+    ("make a word document called Draft Report and download https://x.com/a.zip", None, None),
     # open_app
     ("open chrome", "open_app", {"app": "chrome"}),
     ("open notepad", "open_app", {"app": "notepad"}),
@@ -80,10 +93,19 @@ CASES: list[tuple[str, str | None, dict[str, object] | None]] = [
     ("cancel", "stop_action", {}),
     ("cancel that", "stop_action", {}),
     ("band karo", "stop_action", {}),  # Hindi alias -> "stop"
-    # context pronouns (no Context module yet -> always a clarification)
+    # context pronouns - this module stays context-free by design (see its
+    # module docstring): a match always pairs a clarification with
+    # RouteResult.context_action; only app.py resolves that against the real
+    # Context singleton, so route() alone always returns a clarification here.
     ("open it", "__clarify__", None),
+    ("make that a pdf", "__clarify__", None),
     ("make that into a pdf", "__clarify__", None),
     ("convert this to a pdf", "__clarify__", None),
+    # recall_activity (spec Section 7's literal pattern; Phase 6's memory
+    # store now exists, so this dispatches directly - no model call)
+    ("what did I do today", "recall_activity", {"query": "what did I do today", "days": 7}),
+    ("what did I do yesterday", "recall_activity", {"query": "what did I do yesterday", "days": 7}),
+    ("what did you do this week", "recall_activity", {"query": "what did you do this week", "days": 7}),
     # Hindi / Hinglish aliases (spec Section 6F)
     ("kholo chrome", "open_app", {"app": "chrome"}),
     ("chalao youtube lofi beats", "play_youtube", {"query": "lofi beats"}),
@@ -95,7 +117,6 @@ CASES: list[tuple[str, str | None, dict[str, object] | None]] = [
     ("computer take a screenshot", "take_screenshot", {}),
     # unmatched -> no route at all (Tier 1 territory, Phase 4)
     ("book me a flight to Goa", None, None),
-    ("what did I do yesterday", None, None),
 ]
 
 

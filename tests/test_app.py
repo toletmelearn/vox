@@ -80,10 +80,16 @@ def test_make_that_a_pdf_past_the_context_ttl_asks_which_file_instead_of_acting(
     jail_settings, audit_log, memory_store, mocker
 ):
     """Phase 6 acceptance: the same pair, with the clock advanced past
-    context_ttl_minutes, returns a clarification instead of acting."""
+    context_ttl_minutes, returns a clarification instead of acting - and
+    never reaches for Tier 1 (spec Section 13: no test may open a network
+    connection; an expired context-pronoun match must stay a Tier 0
+    clarification, never a bare no-match that would escalate)."""
     import time
 
     mocker.patch("vox.tools.documents.shutil.which", return_value=None)
+    tier1_route = mocker.patch(
+        "vox.router.tier1_local.route", side_effect=AssertionError("Tier 1 must not be called")
+    )
 
     first = handle_text("make a word file called Notes")
     assert first.ok
@@ -93,6 +99,7 @@ def test_make_that_a_pdf_past_the_context_ttl_asks_which_file_instead_of_acting(
 
     second = handle_text("make that a pdf")
 
+    tier1_route.assert_not_called()
     assert not second.ok
     assert "which file" in second.speech.lower()
     # No second tool call was made, so still only the first command's row.
