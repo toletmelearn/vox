@@ -6,6 +6,7 @@ things that need to be alive for the whole session."""
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Literal
 
 import pystray
@@ -23,6 +24,19 @@ from vox.ui.settings import SettingsWindow
 logger = logging.getLogger("vox.ui.tray")
 
 TrayState = Literal["idle", "listening", "thinking", "error"]
+
+# Real, live finding: pystray's own _win32.py::_mainloop() wraps the Win32
+# GetMessage pump in a bare `except:` that logs and swallows any failure,
+# then tears down its window and returns *normally* - so Icon.run()
+# returning is not, on its own, evidence of a clean Quit. Without the
+# retry loop in run() below, that silent return fell straight through to
+# run.py's `return 0` -> `sys.exit(0)`, which - since every hotkey/voice
+# thread here is a daemon thread (pynput's Listener sets daemon=True by
+# design; HotkeyCapture's worker does too) - killed the voice hotkey, the
+# text hotkey/command bar, and the kill switch along with the icon.
+# Bounded, not infinite: a genuinely broken tray environment (not just one
+# transient hiccup) shouldn't spin-restart forever.
+_MAX_MAINLOOP_RESTARTS = 3
 
 _STATE_COLORS: dict[str, tuple[int, int, int]] = {
     "idle": (120, 120, 120),
@@ -50,6 +64,7 @@ class TrayApp:
         self._voice_capture: vox_app.VoiceCapture | None = None
         self._text_listener: TapHotkeyListener | None = None
         self._abort_listener: AbortHotkeyListener | None = None
+        self._quit_requested = False
         self._icon = pystray.Icon(
             "vox", icon=make_icon_image("idle"), title="vox - idle", menu=self._build_menu()
         )
@@ -148,6 +163,7 @@ class TrayApp:
         return True
 
     def _quit(self) -> None:
+        self._quit_requested = True
         if self._voice_capture is not None:
             self._voice_capture.stop()
         if self._text_listener is not None:
@@ -169,7 +185,60 @@ class TrayApp:
             self._settings.hotkeys.text,
         )
 
+    def _on_restart(self, icon: pystray.Icon) -> None:
+        """Setup callback for a re-created icon after a mainloop crash - the
+        voice/text/abort listeners _on_ready started are still alive (they
+        run on their own daemon threads, independent of the tray's own
+        message loop), so this must not start a second copy of any of
+        them, just make the replacement icon visible."""
+        icon.visible = True
+        logger.info("Tray icon restarted; voice/text hotkeys were not affected.")
+
     def run(self) -> None:
         """Blocks the calling thread - pystray owns the native message loop
-        on it. Call this from the main thread only."""
-        self._icon.run(setup=self._on_ready)
+        on it. Call this from the main thread only.
+
+        See the _MAX_MAINLOOP_RESTARTS comment above: Icon.run() returning
+        does not by itself mean the user chose Quit, so `_quit_requested`
+        (set only by `_quit()`) is the actual signal checked here. A crash
+        recreates the icon and keeps going; exhausting the retry budget
+        degrades to a headless wait (invariant 9: degrade, never brick) -
+        the voice/text hotkeys and kill switch keep running with no tray
+        icon at all, rather than the whole process silently exiting."""
+        attempts = 0
+        while attempts <= _MAX_MAINLOOP_RESTARTS:
+            self._quit_requested = False
+            try:
+                self._icon.run(setup=self._on_ready if attempts == 0 else self._on_restart)
+            except Exception:
+                logger.error("Tray icon's run() raised unexpectedly.", exc_info=True)
+
+            if self._quit_requested:
+                return
+
+            attempts += 1
+            if attempts > _MAX_MAINLOOP_RESTARTS:
+                break
+            logger.error(
+                "Tray icon's message loop ended without a Quit request "
+                "(restart %d/%d) - recreating the icon.",
+                attempts,
+                _MAX_MAINLOOP_RESTARTS,
+            )
+            self._icon = pystray.Icon(
+                "vox", icon=make_icon_image("idle"), title="vox - idle", menu=self._build_menu()
+            )
+
+        logger.error(
+            "Tray icon's message loop failed %d times in a row; giving up "
+            "on the icon for this session. Voice (%s) and text (%s) "
+            "hotkeys keep running - press Ctrl+C in this console, or "
+            "restart vox, to quit.",
+            _MAX_MAINLOOP_RESTARTS,
+            self._settings.hotkeys.voice,
+            self._settings.hotkeys.text,
+        )
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            self._quit()
