@@ -45,14 +45,14 @@ class MessagingConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    jail_roots: list[str] = Field(
-        default_factory=lambda: [
-            "~/Desktop",
-            "~/Documents",
-            "~/Downloads",
-            "~/vox-workspace",
-        ]
-    )
+    # The four PARENT_KEYS roots (desktop/documents/downloads/workdir) are
+    # always jail roots - jail.py derives them straight from `paths.*`, via
+    # the same OS known-folder resolution `load_settings()` applies below -
+    # so they don't need to be duplicated here too. A duplicate literal
+    # default here is exactly how `paths.desktop` and `security.jail_roots`
+    # drifted apart on a OneDrive-redirected machine (see DECISIONS.md).
+    # This field is now only for genuinely extra roots beyond those four.
+    jail_roots: list[str] = Field(default_factory=list)
     max_download_mb: int = 500
     blocked_hosts: list[str] = Field(default_factory=list)
     confirm_destructive: bool = True
@@ -132,6 +132,41 @@ def save_settings(settings: Settings, path: Path | None = None) -> None:
         yaml.safe_dump(settings.model_dump(), f, sort_keys=False)
 
 
+_DEFAULT_PATHS = PathsConfig()
+
+
+def _apply_known_folders(settings: Settings) -> None:
+    """A path still at its plain `~/Desktop`-style default (never explicitly
+    customised away from it) is asked of the platform adapter instead - real
+    OS known-folder redirection (Windows Known Folder Move via OneDrive, XDG
+    user-dirs on Linux) can silently move the real, visible folder somewhere
+    else, leaving the naive default pointing at a stale, empty directory the
+    user never sees. Confirmed live: `create_folder` "succeeded" into
+    exactly such a stale `~/Desktop` on a machine where OneDrive had
+    redirected the real one to `~/OneDrive/Desktop` - see DECISIONS.md.
+    A value the user did set to something else is always left alone.
+    Never overrides `workdir` - that one is vox's own folder, not an OS
+    concept - and degrades silently (invariant 9) if the platform can't
+    say (`UnsupportedCapability`, or `None` from a real adapter with no
+    redirection info)."""
+    from vox.platform import get_adapter
+    from vox.platform.base import UnsupportedCapability
+
+    adapter = get_adapter()
+    updates: dict[str, str] = {}
+    for key in ("desktop", "documents", "downloads"):
+        if getattr(settings.paths, key) != getattr(_DEFAULT_PATHS, key):
+            continue
+        try:
+            folder = adapter.known_folder(key)
+        except UnsupportedCapability:
+            folder = None
+        if folder is not None:
+            updates[key] = str(folder)
+    if updates:
+        settings.paths = settings.paths.model_copy(update=updates)
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings from a YAML file. Missing file -> defaults. Never raises
     on a missing file; a malformed one still raises so a broken config.yaml
@@ -139,10 +174,13 @@ def load_settings(path: Path | None = None) -> Settings:
     if path is None:
         path = Path("config.yaml")
     if not path.exists():
-        return Settings()
-    with path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-    return Settings.model_validate(raw)
+        settings = Settings()
+    else:
+        with path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        settings = Settings.model_validate(raw)
+    _apply_known_folders(settings)
+    return settings
 
 
 _settings: Settings | None = None

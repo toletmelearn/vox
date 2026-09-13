@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from vox.platform.base import UnsupportedCapability, WindowInfo
+from vox.platform.base import KnownFolder, UnsupportedCapability, WindowInfo
 
 
 class NullAdapter:
@@ -65,3 +65,6 @@ class NullAdapter:
 
     def capabilities(self) -> set[str]:
         return set()
+
+    def known_folder(self, name: KnownFolder) -> Path | None:
+        raise UnsupportedCapability("known_folder is not available")

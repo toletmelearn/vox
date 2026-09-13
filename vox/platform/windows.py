@@ -25,7 +25,7 @@ import win32process
 import win32security
 from PIL import ImageGrab
 
-from vox.platform.base import UnsupportedCapability, WindowInfo
+from vox.platform.base import KnownFolder, UnsupportedCapability, WindowInfo
 
 logger = logging.getLogger("vox.platform.windows")
 
@@ -43,6 +43,29 @@ _MOD_NOREPEAT = 0x4000
 _PROBE_HOTKEY_ID = 0xBEEF  # arbitrary; only ever held for the duration of one probe call
 
 _VK_NAMED = {"space": 0x20, "esc": 0x1B, "escape": 0x1B, "tab": 0x09, "enter": 0x0D}
+
+# https://learn.microsoft.com/windows/win32/shell/knownfolderid - the real,
+# redirection-aware known folder IDs. A OneDrive "Backup your folders" setup
+# (the Windows default many users have on) moves Desktop/Documents under
+# ~/OneDrive without updating the plain ~/Desktop / ~/Documents paths at
+# all - confirmed live on this dev machine, where a naive ~/Desktop had
+# become a stale, invisible folder Explorer no longer showed, silently
+# eating every file vox created there. SHGetKnownFolderPath is the only way
+# to ask Windows what these folders *actually* are right now.
+_KNOWN_FOLDER_GUIDS: dict[KnownFolder, str] = {
+    "desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",
+    "downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
+}
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
 
 
 def _parse_win_chord(chord: str) -> tuple[int, int]:
@@ -375,3 +398,25 @@ class WindowsAdapter:
             "find_installed_app",
         }
         return caps
+
+    def known_folder(self, name: KnownFolder) -> Path | None:
+        guid_str = _KNOWN_FOLDER_GUIDS.get(name)
+        if guid_str is None:
+            return None
+        rfid = _GUID()
+        if ctypes.windll.ole32.CLSIDFromString(ctypes.c_wchar_p(guid_str), ctypes.byref(rfid)) != 0:
+            return None
+        path_ptr = ctypes.c_wchar_p()
+        try:
+            hresult = ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.byref(rfid), 0, None, ctypes.byref(path_ptr)
+            )
+            if hresult != 0 or not path_ptr.value:
+                return None
+            return Path(path_ptr.value)
+        except OSError:
+            logger.warning("known_folder(%r) failed", name, exc_info=True)
+            return None
+        finally:
+            if path_ptr.value:
+                ctypes.windll.ole32.CoTaskMemFree(path_ptr)

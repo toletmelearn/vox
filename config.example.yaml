@@ -35,7 +35,7 @@ messaging:
   contact_match_cutoff: 0.8
 
 security:
-  jail_roots: ["~/Desktop", "~/Documents", "~/Downloads", "~/vox-workspace"]
+  jail_roots: []               # desktop/documents/downloads/workdir are always jail roots (derived from `paths.*` above); list only genuinely extra roots here
   max_download_mb: 500
   blocked_hosts: []
   confirm_destructive: true

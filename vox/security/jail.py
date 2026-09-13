@@ -50,8 +50,27 @@ class JailViolation(Exception):
 
 
 def jail_roots() -> list[Path]:
+    """The four PARENT_KEYS roots, plus whatever extra roots
+    `security.jail_roots` names. Deriving the four from `_parent_root`
+    (rather than a second, separately-configured copy of the same four
+    paths) is deliberate: a duplicate list is exactly how `paths.desktop`
+    and the old `security.jail_roots` default drifted apart on a
+    OneDrive-redirected machine, making a real, correctly-created folder
+    on the real Desktop fail as "escaping the jail" - see DECISIONS.md.
+
+    Deduplicated by resolved path: a config.yaml still carrying the old
+    literal ~/Desktop-style entries in `security.jail_roots` (leftover from
+    before that field was narrowed to "extra roots only") would otherwise
+    list the same physical folder twice - once derived, once from config -
+    which is confusing at best in the self-check table and, on a platform
+    where two differently-spelled paths resolve to the same directory,
+    could make an allowlist walk do redundant work. `dict.fromkeys`
+    preserves first-seen order, so the derived PARENT_KEYS roots always
+    win the display slot over a redundant config entry."""
     settings = get_settings()
-    return [Path(root).expanduser().resolve() for root in settings.security.jail_roots]
+    roots = [_parent_root(key) for key in PARENT_KEYS]
+    roots += [Path(root).expanduser().resolve() for root in settings.security.jail_roots]
+    return list(dict.fromkeys(roots))
 
 
 def _parent_root(parent_key: str) -> Path:

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+KnownFolder = Literal["desktop", "documents", "downloads"]
 
 
 class UnsupportedCapability(Exception):
@@ -62,3 +64,14 @@ class PlatformAdapter(Protocol):
     def cpu_supports_avx2(self) -> bool: ...
 
     def capabilities(self) -> set[str]: ...
+
+    def known_folder(self, name: KnownFolder) -> Path | None:
+        """The OS's real, current location for `name`, honouring whatever
+        redirection the user has in place (Windows Known Folder Move via
+        OneDrive, XDG user-dirs on Linux, ...) - not the naive `~/Desktop`
+        string. `None` means "this platform can't say" (e.g. no XDG
+        user-dirs config present); config.py's `paths.*` default is the
+        fallback either way (invariant 9: degrade, never brick). Raises
+        `UnsupportedCapability` only when the platform has no concept of
+        this at all (the null test adapter)."""
+        ...

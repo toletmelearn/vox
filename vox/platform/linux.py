@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import webbrowser
@@ -14,11 +15,17 @@ from typing import Any
 
 import psutil
 
-from vox.platform.base import UnsupportedCapability, WindowInfo
+from vox.platform.base import KnownFolder, UnsupportedCapability, WindowInfo
 
 logger = logging.getLogger("vox.platform.linux")
 
 _BROWSER_PROCESSES = {"chrome", "google-chrome", "chromium", "firefox", "brave", "opera"}
+
+_XDG_DIR_KEYS: dict[KnownFolder, str] = {
+    "desktop": "XDG_DESKTOP_DIR",
+    "documents": "XDG_DOCUMENTS_DIR",
+    "downloads": "XDG_DOWNLOAD_DIR",
+}
 
 
 def _is_x11() -> bool:
@@ -160,3 +167,22 @@ class LinuxAdapter:
         if _have("xdg-open"):
             caps.add("open_path")
         return caps
+
+    def known_folder(self, name: KnownFolder) -> Path | None:
+        """`xdg-user-dirs` (present on most desktop distros) can redirect
+        these away from the plain ~/Desktop etc., same idea as Windows'
+        Known Folder Move via OneDrive - the config file uses shell-style
+        `$HOME` expansion, per the freedesktop.org spec."""
+        key = _XDG_DIR_KEYS.get(name)
+        if key is None:
+            return None
+        config_file = Path("~/.config/user-dirs.dirs").expanduser()
+        try:
+            text = config_file.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        match = re.search(rf'{key}="([^"]*)"', text)
+        if not match:
+            return None
+        raw = match.group(1).replace("$HOME", str(Path.home()))
+        return Path(raw)
