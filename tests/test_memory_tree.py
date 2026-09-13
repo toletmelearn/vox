@@ -120,3 +120,25 @@ def test_archive_artifact_is_a_noop_if_already_archived(tmp_path, mocker):
     archive_artifact(src, state_dir)  # second call: destination already exists
 
     link_mock.assert_not_called()
+
+
+def test_archive_artifact_skips_folders_instead_of_raising(tmp_path, mocker):
+    """Regression test for a real live bug: create_folder's output is a
+    directory, and os.link() failing on it (then shutil.copy2()'s fallback
+    failing too, since it can't copy a directory) surfaced as a real
+    PermissionError via a real voice command ("make a folder called fresh
+    threading test") - correctly logged as a warning rather than crashing
+    the command, but still a real gap. Archiving should skip folders
+    entirely, not attempt and fail."""
+    state_dir = tmp_path / "vox-state"
+    src_folder = tmp_path / "fresh threading test"
+    src_folder.mkdir()
+
+    link_mock = mocker.patch("vox.memory.tree.os.link")
+    copy_mock = mocker.patch("vox.memory.tree.shutil.copy2")
+
+    archive_artifact(src_folder, state_dir)
+
+    link_mock.assert_not_called()
+    copy_mock.assert_not_called()
+    assert not (state_dir / "artifacts").exists()

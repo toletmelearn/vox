@@ -85,8 +85,21 @@ def prune_transcripts(state_dir: Path, retention_days: int, *, now: datetime | N
 
 def archive_artifact(path: Path, state_dir: Path) -> None:
     """Hardlinks (falling back to a copy across volumes) the artifact into
-    `<state_dir>/artifacts/YYYY-MM-DD/` (spec Section 6C). No OS-detection
-    branching needed here - os.link()/shutil.copy2() are already portable."""
+    `<state_dir>/artifacts/YYYY-MM-DD/` (spec Section 6C: "hardlinks... the
+    file"). No OS-detection branching needed here - os.link()/
+    shutil.copy2() are already portable.
+
+    Folders (e.g. create_folder's output) are skipped, not recursively
+    copied - confirmed live: os.link() fails on a directory, and
+    shutil.copy2()'s fallback then fails too since it only copies files,
+    surfacing as a real PermissionError on Windows. A whole-tree copy would
+    also be a synchronous, unbounded-size operation on the guard layer's
+    critical path for what the spec frames as a cheap single-file backup -
+    not worth adding shutil.copytree's own edge cases (symlinks, an
+    existing destination, size/time cost) for a "safe"-risk command that
+    has already succeeded regardless."""
+    if path.is_dir():
+        return
     dest_dir = state_dir / "artifacts" / datetime.now().strftime("%Y-%m-%d")
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / path.name
