@@ -47,6 +47,10 @@ def _h_rescan_apps(m: Match[str]) -> RouteResult:
     return _call("rescan_apps", {})
 
 
+def _h_play_youtube_default(m: Match[str]) -> RouteResult:
+    return _call("play_youtube", {"query": m.group("query").strip()})
+
+
 def _target_alternation() -> str | None:
     """Every catalogue key and alias, longest first so a multi-word alias
     ("google drive") matches in full before a shorter one could shadow it.
@@ -69,10 +73,38 @@ def patterns() -> list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult
     youtube" phrasing (spec Section 7 lists both; play_youtube's own yt-dlp
     resolution is the more specific, already-working behaviour). WhatsApp
     messaging patterns come first here since they're the most specific
-    shape."""
+    shape.
+
+    The final entry is a deliberate default, not an oversight: a bare "play
+    X" with no target word at all (spec Section 1's own worked example,
+    "play Kishore Kumar songs", defaults to YouTube) must resolve here,
+    deterministically, rather than falling through to Tier 1 - a real,
+    live bug found by the user showed Tier 1 filling play_on_target's
+    required `target` argument with a plausible-but-unrequested guess
+    ("spotify") when nothing was said, since "spotify" is a genuinely valid
+    catalogue key and no schema-level check can tell "valid" apart from
+    "not what the user asked for." This entry only fires when nothing more
+    specific matched first (it's last in this list, and everything above -
+    plus tier0_grammar's own static "on youtube" patterns, tried before
+    this module at all - already claims every phrasing that names a
+    target). The negative lookahead excludes any tail shaped like "... on
+    <word>" even when <word> isn't a real catalogue entry ("play X on
+    flipkart") - swallowing "on flipkart" into a YouTube search query would
+    silently misinterpret a request that named a target, just one this
+    catalogue doesn't know; that case should escalate to Tier 1 rather than
+    guess YouTube. Unlike the catalogue-driven entries above, this one
+    doesn't need targets.yaml at all, so it's included even when the
+    catalogue is empty/missing (invariant 9: degrade, never brick) -
+    "play X" should still default to YouTube on a machine with no resolver
+    catalogue configured."""
+    default_play_pattern = (
+        re.compile(rf"^{_FILLER_INLINE}play\s+(?!.*\bon\s+\S+$)(?P<query>.+)$", re.IGNORECASE),
+        _h_play_youtube_default,
+    )
+
     alt = _target_alternation()
     if alt is None:
-        return []
+        return [default_play_pattern]
     return [
         (
             re.compile(
@@ -112,4 +144,5 @@ def patterns() -> list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult
             re.compile(r"^rescan apps$", re.IGNORECASE),
             _h_rescan_apps,
         ),
+        default_play_pattern,
     ]

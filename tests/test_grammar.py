@@ -136,6 +136,15 @@ CASES: list[tuple[str, str | None, dict[str, object] | None]] = [
         {"contact": "Subodh", "message": "I'll be late"},
     ),
     ("rescan apps", "rescan_apps", {}),
+    # real bug: a bare "play X" with no target word must default to
+    # play_youtube deterministically, never fall through to Tier 1 and let
+    # it guess a target (see DECISIONS.md - "play kishor kumar song"
+    # silently played on Spotify, which the user never asked for)
+    ("play kishor kumar song", "play_youtube", {"query": "kishor kumar song"}),
+    ("play the office", "play_youtube", {"query": "the office"}),
+    # an unrecognised named target must NOT be swallowed into a YouTube
+    # search query - it should stay unmatched and escalate instead
+    ("play kishor kumar on flipkart", None, None),
 ]
 
 

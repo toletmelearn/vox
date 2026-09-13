@@ -90,8 +90,10 @@ def _play_payload(target: Target, query: str) -> tuple[str | None, str] | None:
     name="play_on_target",
     risk="safe",
     description=(
-        "Search for and play something on a media service, e.g. a song on "
-        "YouTube or Spotify."
+        "Search for and play something on a media service the user explicitly "
+        "named, e.g. 'play X on Spotify' or 'play X on Telegram'. Do NOT use "
+        "this and do NOT guess a service if none was named in the request — "
+        "call play_youtube instead for a plain 'play X' with no named service."
     ),
 )
 def play_on_target(target: str, query: str) -> ToolResult:
