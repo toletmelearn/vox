@@ -100,6 +100,14 @@ class ArtifactRow:
     still_exists: bool
 
 
+@dataclass(frozen=True)
+class AppCacheRow:
+    target: str
+    installed: bool
+    exe_path: str | None
+    checked_at: datetime
+
+
 class MemoryStore:
     """`record_execution` (memory/tracking.py) calls `get_memory_store()`
     from whichever thread is running a command - the pystray setup thread
@@ -231,6 +239,40 @@ class MemoryStore:
                 )
                 updated += 1
         return updated
+
+    # -- app cache (resolver install detection, spec Section 6A) --------
+    def get_app_cache(self, target: str) -> AppCacheRow | None:
+        row = self._conn.execute(
+            "SELECT target, installed, exe_path, checked_at FROM app_cache WHERE target = ?",
+            (target,),
+        ).fetchone()
+        if row is None:
+            return None
+        return AppCacheRow(
+            target=row[0],
+            installed=bool(row[1]),
+            exe_path=row[2],
+            checked_at=datetime.fromisoformat(row[3]),
+        )
+
+    def set_app_cache(self, target: str, *, installed: bool, exe_path: str | None) -> None:
+        self._conn.execute(
+            """INSERT INTO app_cache (target, installed, exe_path, checked_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(target) DO UPDATE SET
+                 installed = excluded.installed,
+                 exe_path = excluded.exe_path,
+                 checked_at = excluded.checked_at""",
+            (target, int(installed), exe_path, datetime.now(timezone.utc).isoformat()),
+        )
+
+    def invalidate_app_cache(self, target: str | None = None) -> int:
+        """"rescan apps" (spec Section 6A): forget one target's cached
+        install-detection result, or all of them when `target` is None."""
+        if target is None:
+            cur = self._conn.execute("DELETE FROM app_cache")
+        else:
+            cur = self._conn.execute("DELETE FROM app_cache WHERE target = ?", (target,))
+        return cur.rowcount
 
     # -- sessions --------------------------------------------------------
     def start_session(self, session_id: str) -> None:

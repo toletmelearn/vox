@@ -50,7 +50,15 @@ class LinuxAdapter:
         return result.returncode == 0
 
     def find_installed_app(self, target: Any) -> str | None:
-        raise UnsupportedCapability("find_installed_app is not implemented yet")
+        """No registry/Start Menu equivalent on Linux; best-effort via
+        `shutil.which` against `target.process_names` — Linux binaries are
+        usually just their process name on PATH, unlike Windows' App
+        Paths/Start Menu indirection."""
+        for name in getattr(target, "process_names", None) or []:
+            candidate = shutil.which(str(name))
+            if candidate:
+                return candidate
+        return None
 
     def launch(self, exe_or_uri: str, args: list[str] | None = None) -> bool:
         try:
@@ -137,6 +145,7 @@ class LinuxAdapter:
             "open_default_browser",
             "running_browsers",
             "restrict_directory_to_current_user",
+            "find_installed_app",
         }
         if _is_x11() and _have("wmctrl"):
             caps |= {"list_windows", "focus_window"}

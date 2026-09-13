@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import webbrowser
+import winreg
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,48 @@ def _parse_win_chord(chord: str) -> tuple[int, int]:
     if vk is None:
         raise ValueError(f"chord has no non-modifier key: {chord!r}")
     return mods, vk
+
+
+def _registry_app_path(app_id: str) -> str | None:
+    """A registry `App Paths` key's default value is the app's real exe
+    path — this is what most installers register (spec Section 6A Step 2).
+    The key is literally named `<exe filename>`; `app_id` may already carry
+    the `.exe` (targets.yaml is free to spell it either way), so try both."""
+    candidates = [app_id] if app_id.lower().endswith(".exe") else [app_id, f"{app_id}.exe"]
+    for candidate in candidates:
+        subkey = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{candidate}"
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    value, _ = winreg.QueryValueEx(key, "")
+                    if value:
+                        return str(value)
+            except OSError:
+                continue
+    return None
+
+
+def _start_menu_dirs() -> list[Path]:
+    dirs = []
+    common = os.environ.get("ProgramData")
+    if common:
+        dirs.append(Path(common) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        dirs.append(Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+    return [d for d in dirs if d.exists()]
+
+
+def _find_start_menu_shortcut(app_id: str) -> str | None:
+    needle = app_id.lower()
+    for base in _start_menu_dirs():
+        try:
+            for shortcut in base.rglob("*.lnk"):
+                if needle in shortcut.stem.lower():
+                    return str(shortcut)
+        except OSError:
+            continue
+    return None
 
 
 class WindowsAdapter:
@@ -140,9 +183,21 @@ class WindowsAdapter:
                 win32process.AttachThreadInput(current_thread, fg_thread, False)
 
     def find_installed_app(self, target: Any) -> str | None:
-        # Registry App Paths / Start Menu scan lands with the resolver in
-        # Phase 7, once resolver/targets.py defines Target.
-        raise UnsupportedCapability("find_installed_app is not implemented yet")
+        """Registry App Paths, then a Start Menu shortcut scan (spec Section
+        6A Step 2), tried against each of `target.windows_app_ids` in
+        order. Both are genuinely slow (a Start Menu walk especially) —
+        resolver/detect.py caches the result for 24h, so this only actually
+        runs once per target per TTL window, not on every open_target call."""
+        app_ids = list(getattr(target, "windows_app_ids", None) or [])
+        for app_id in app_ids:
+            exe = _registry_app_path(app_id)
+            if exe:
+                return exe
+        for app_id in app_ids:
+            shortcut = _find_start_menu_shortcut(app_id)
+            if shortcut:
+                return shortcut
+        return None
 
     def launch(self, exe_or_uri: str, args: list[str] | None = None) -> bool:
         try:
@@ -317,5 +372,6 @@ class WindowsAdapter:
             "screenshot",
             "convert_docx_to_pdf",
             "restrict_directory_to_current_user",
+            "find_installed_app",
         }
         return caps

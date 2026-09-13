@@ -11,10 +11,12 @@ expired.
 
 recall_activity is now wired (Phase 6's memory store exists) as a direct
 Tier 0 dispatch - spec Section 7's literal pattern, resolved deterministically
-with no model call. Patterns for open_target/play_on_target/
-compose_whatsapp_message are still deferred to Phase 7, when those tools
-exist — matching them here would just dispatch to a tool the registry
-doesn't have yet.
+with no model call.
+
+open_target/play_on_target/compose_whatsapp_message (Phase 7) are matched by
+vox.router.tier0_targets, tried after the patterns below - see that
+module's docstring for why it's a separate file (same 300-line-guideline
+precedent as tier0_hindi.py).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from collections.abc import Callable
 from re import Match
 
 from vox.config import get_settings
+from vox.router import tier0_hindi, tier0_targets
 from vox.router.base import RouteResult, ToolCall
 
 _FILLER_PREFIX = re.compile(r"^(?:hey|ok|okay|please|computer)[\s,]+", re.IGNORECASE)
@@ -47,22 +50,6 @@ _NO_MATCH = RouteResult(call=None, confidence=0.0, tier="none")
 def _is_compound(text: str) -> bool:
     return bool(_COMPOUND_MARKER.search(text))
 
-# (raw phrase, canonical English verb). Word order matches English for all
-# of these, so a straight substitution is enough — "banao"/"bana do"
-# ("make") is the one Hindi verb whose word order is reversed for folder
-# creation, handled by a dedicated pattern below instead (spec Section 6F).
-_HINDI_VERB_ALIASES: list[tuple[str, str]] = [
-    (r"\bkhol do\b", "open"),
-    (r"\bkholo\b", "open"),
-    (r"\bbaja do\b", "play"),
-    (r"\bchalao\b", "play"),
-    (r"\bsearch karo\b", "search"),
-    (r"\bdhoondo\b", "search"),
-    (r"\bbhej do\b", "send"),
-    (r"\bbhejo\b", "send"),
-    (r"\bband karo\b", "stop"),
-]
-
 
 def _cleanup(text: str) -> str:
     cleaned = text.strip()
@@ -74,12 +61,6 @@ def _cleanup(text: str) -> str:
             break
         cleaned = stripped
     return cleaned
-
-
-def _apply_hindi_aliases(text: str) -> str:
-    for pattern, replacement in _HINDI_VERB_ALIASES:
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-    return text
 
 
 def _normalize_spoken_filename(name: str) -> str:
@@ -120,13 +101,6 @@ def _h_create_folder(m: Match[str]) -> RouteResult:
         return _NO_MATCH
     parent = (m.group("parent") or m.group("parent_leading") or "desktop").lower()
     return _call("create_folder", {"name": name, "parent": parent})
-
-
-def _h_create_folder_hindi(m: Match[str]) -> RouteResult:
-    name = _normalize_spoken_filename(m.group("name").strip())
-    if _is_compound(name):
-        return _NO_MATCH
-    return _call("create_folder", {"name": name, "parent": "desktop"})
 
 
 def _h_create_text_file(m: Match[str]) -> RouteResult:
@@ -295,32 +269,23 @@ _PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
 ]
 
 
-# Reversed word order ("<name> ke naam se ek folder banao") — spec Section
-# 6F's literal example. Gated separately since it isn't fixed by the simple
-# verb substitution above (English word order stays verb-first).
-_HINDI_PATTERNS: list[tuple[re.Pattern[str], Callable[[Match[str]], RouteResult]]] = [
-    (
-        re.compile(
-            r"^(?P<name>.+?)\s*(?:ke naam se\s*)?(?:ek\s+)?folder\s+(?:banao|bana do)$",
-            re.IGNORECASE,
-        ),
-        _h_create_folder_hindi,
-    ),
-]
-
-
 def route(text: str) -> RouteResult:
     cleaned = _cleanup(text)
 
     hindi_aliases_enabled = get_settings().stt.hindi_aliases
     if hindi_aliases_enabled:
-        for pattern, handler in _HINDI_PATTERNS:
+        for pattern, handler in tier0_hindi.PATTERNS:
             match = pattern.match(cleaned)
             if match:
                 return handler(match)
-        cleaned = _apply_hindi_aliases(cleaned)
+        cleaned = tier0_hindi.apply_verb_aliases(cleaned)
 
     for pattern, handler in _PATTERNS:
+        match = pattern.match(cleaned)
+        if match:
+            return handler(match)
+
+    for pattern, handler in tier0_targets.patterns():
         match = pattern.match(cleaned)
         if match:
             return handler(match)

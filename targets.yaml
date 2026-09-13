@@ -1,0 +1,102 @@
+# Target catalogue for the resolver (spec Section 6A). Shipped with
+# sensible defaults; edit this file directly to add a service or fix an
+# alias that Whisper keeps mishearing on your machine. Keys are what the
+# LLM/Tier 0 grammar refer to a service by; `aliases` absorb spoken variants.
+youtube:
+  display: "YouTube"
+  aliases: ["you tube", "yt", "youtub", "utube", "u tube"]
+  deep_link: null
+  web_url: "https://www.youtube.com"
+  web_search_url: "https://www.youtube.com/results?search_query={q}"
+  window_title_match: ["YouTube"]
+  windows_app_ids: []
+  process_names: []
+  prefer: "web"
+
+whatsapp:
+  display: "WhatsApp"
+  aliases: ["whats up", "whatsup", "whattsapp", "whatsapp web"]
+  deep_link: "whatsapp://"
+  web_url: "https://web.whatsapp.com"
+  web_search_url: null
+  window_title_match: ["WhatsApp"]
+  windows_app_ids: ["WhatsApp"]
+  process_names: ["WhatsApp.exe"]
+  prefer: "app"
+
+gmail:
+  display: "Gmail"
+  aliases: ["g mail", "mail", "email"]
+  deep_link: null
+  web_url: "https://mail.google.com"
+  web_search_url: null
+  window_title_match: ["Gmail", "Inbox"]
+  windows_app_ids: []
+  process_names: []
+  prefer: "web"
+
+google_drive:
+  display: "Google Drive"
+  aliases: ["drive", "g drive", "gdrive"]
+  deep_link: null
+  web_url: "https://drive.google.com"
+  web_search_url: null
+  window_title_match: ["Google Drive"]
+  windows_app_ids: []
+  process_names: []
+  prefer: "web"
+
+spotify:
+  display: "Spotify"
+  aliases: ["spottify", "spotifi"]
+  deep_link: "spotify:"
+  web_url: "https://open.spotify.com"
+  web_search_url: "https://open.spotify.com/search/{q}"
+  window_title_match: ["Spotify"]
+  windows_app_ids: ["Spotify"]
+  process_names: ["Spotify.exe"]
+  prefer: "app"
+
+telegram:
+  display: "Telegram"
+  aliases: ["tg", "telegramme"]
+  deep_link: "tg://"
+  web_url: "https://web.telegram.org"
+  web_search_url: null
+  window_title_match: ["Telegram"]
+  windows_app_ids: ["Telegram Desktop", "Telegram"]
+  process_names: ["Telegram.exe"]
+  prefer: "app"
+
+chatgpt:
+  display: "ChatGPT"
+  aliases: ["chat gpt", "gpt", "chatgtp", "chat g p t"]
+  deep_link: null
+  web_url: "https://chat.openai.com"
+  web_search_url: null
+  window_title_match: ["ChatGPT"]
+  windows_app_ids: []
+  process_names: []
+  prefer: "web"
+
+maps:
+  display: "Google Maps"
+  aliases: ["google maps", "map"]
+  deep_link: null
+  web_url: "https://maps.google.com"
+  web_search_url: "https://www.google.com/maps/search/{q}"
+  window_title_match: ["Google Maps"]
+  windows_app_ids: []
+  process_names: []
+  prefer: "web"
+
+github:
+  display: "GitHub"
+  aliases: ["git hub"]
+  deep_link: null
+  web_url: "https://github.com"
+  web_search_url: "https://github.com/search?q={q}"
+  window_title_match: ["GitHub"]
+  windows_app_ids: []
+  process_names: []
+  prefer: "web"

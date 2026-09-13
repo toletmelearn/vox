@@ -10,6 +10,22 @@ from re import Match
 
 from vox.router.base import RouteResult, ToolCall
 
+# Same shape as tier0_grammar's own _COMPOUND_MARKER/_is_compound -
+# duplicated for the same reason as _normalize_spoken_filename below: a
+# second buried imperative means the utterance is a multi-step request this
+# grammar can't represent, and that's true regardless of which language
+# matched it.
+_COMPOUND_MARKER = re.compile(
+    r"\band\b.*\b(?:make|create|new|open|search|google|play|send|download|"
+    r"message|msg|lock|take|convert|turn|stop|cancel)\b",
+    re.IGNORECASE,
+)
+_NO_MATCH = RouteResult(call=None, confidence=0.0, tier="none")
+
+
+def _is_compound(text: str) -> bool:
+    return bool(_COMPOUND_MARKER.search(text))
+
 # (raw phrase, canonical English verb). Word order matches English for all
 # of these, so a straight substitution is enough — "banao"/"bana do"
 # ("make") is the one Hindi verb whose word order is reversed for folder
@@ -46,6 +62,8 @@ def _normalize_spoken_filename(name: str) -> str:
 
 def _h_create_folder_hindi(m: Match[str]) -> RouteResult:
     name = _normalize_spoken_filename(m.group("name").strip())
+    if _is_compound(name):
+        return _NO_MATCH
     return RouteResult(
         call=ToolCall(name="create_folder", args={"name": name, "parent": "desktop"}),
         confidence=0.95,

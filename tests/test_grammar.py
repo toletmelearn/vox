@@ -117,6 +117,25 @@ CASES: list[tuple[str, str | None, dict[str, object] | None]] = [
     ("computer take a screenshot", "take_screenshot", {}),
     # unmatched -> no route at all (Tier 1 territory, Phase 4)
     ("book me a flight to Goa", None, None),
+    # open_target / play_on_target / compose_whatsapp_message (spec Section
+    # 7, Phase 7) - matched against the real shipped targets.yaml catalogue
+    ("go to youtube", "open_target", {"target": "youtube"}),
+    ("open whatsapp", "open_target", {"target": "whatsapp"}),
+    ("launch gmail", "open_target", {"target": "gmail"}),
+    ("go to you tube", "open_target", {"target": "you tube"}),
+    ("go to spotify and play lofi beats", "play_on_target", {"target": "spotify", "query": "lofi beats"}),
+    ("play lofi beats on spotify", "play_on_target", {"target": "spotify", "query": "lofi beats"}),
+    (
+        "whatsapp message Subodh saying I'll be late",
+        "compose_whatsapp_message",
+        {"contact": "Subodh", "message": "I'll be late"},
+    ),
+    (
+        "message Subodh on whatsapp saying I'll be late",
+        "compose_whatsapp_message",
+        {"contact": "Subodh", "message": "I'll be late"},
+    ),
+    ("rescan apps", "rescan_apps", {}),
 ]
 
 

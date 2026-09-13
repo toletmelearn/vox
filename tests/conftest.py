@@ -7,8 +7,10 @@ import pytest
 
 from vox import config as config_module
 from vox import platform as platform_module
+from vox.memory import aliases as aliases_module
 from vox.memory import context as context_module
 from vox.memory import store as memory_store_module
+from vox.resolver import targets as targets_module
 from vox.security import audit as audit_module
 
 if os.environ.get("VOX_FORCE_NULL_ADAPTER") == "1":
@@ -19,13 +21,15 @@ if os.environ.get("VOX_FORCE_NULL_ADAPTER") == "1":
 
 @pytest.fixture(autouse=True)
 def _reset_memory_singletons():
-    """Context and the memory store are process-wide singletons (same DI
-    pattern as get_audit_log); without a reset, a `last_artifact` or DB
-    handle set by one test would leak into the next (spec Section 13: tests
-    must be independent)."""
+    """Context, the memory store, the alias store, and the target catalogue
+    are all process-wide singletons (same DI pattern as get_audit_log);
+    without a reset, state set by one test would leak into the next (spec
+    Section 13: tests must be independent)."""
     yield
     context_module.reset_context()
     memory_store_module.reset_memory_store()
+    aliases_module.reset_alias_store()
+    targets_module.reset_target_catalogue()
 
 
 @pytest.fixture
@@ -74,6 +78,14 @@ def memory_store(jail_settings: config_module.Settings) -> memory_store_module.M
     yield store
     store.close()
     memory_store_module.reset_memory_store()
+
+
+@pytest.fixture
+def alias_store(jail_settings: config_module.Settings) -> aliases_module.AliasStore:
+    store = aliases_module.AliasStore(Path(jail_settings.paths.state_dir).expanduser())
+    aliases_module.set_alias_store(store)
+    yield store
+    aliases_module.reset_alias_store()
 
 
 @pytest.fixture

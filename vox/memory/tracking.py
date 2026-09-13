@@ -7,9 +7,9 @@ the audit row, running the confirm gate) stays in app.py."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from vox.config import get_settings
+from vox.config import Settings, get_settings
 from vox.memory.context import get_context
 from vox.memory.store import artifact_kind, get_memory_store
 from vox.memory.tree import append_transcript, archive_artifact
@@ -17,6 +17,28 @@ from vox.router.base import ToolCall
 from vox.tools.registry import ToolResult
 
 Outcome = Literal["ok", "failed", "cancelled"]
+
+# Tool name -> the arg holding a message body. Spec Section 6C: "If
+# compose_whatsapp_message runs, store the contact key and message length,
+# not the message body, unless config.memory.store_message_bodies is
+# explicitly true." A dict, not a special case, so a second messaging
+# service (spec Section 6B: "the same pattern generalises to Telegram") is
+# a one-line addition here, not a new redaction path.
+_MESSAGE_BODY_ARGS: dict[str, str] = {
+    "compose_whatsapp_message": "message",
+}
+
+
+def _sanitize_args(tool: str, args: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    body_key = _MESSAGE_BODY_ARGS.get(tool)
+    if body_key is None or settings.memory.store_message_bodies:
+        return args
+    body = args.get(body_key)
+    if not isinstance(body, str):
+        return args
+    sanitized = dict(args)
+    sanitized[body_key] = f"<{len(body)} chars>"
+    return sanitized
 
 
 def record_execution(call: ToolCall, *, transcript: str, outcome: Outcome, result: ToolResult) -> None:
@@ -51,7 +73,7 @@ def record_execution(call: ToolCall, *, transcript: str, outcome: Outcome, resul
         session_id=context.session_id,
         transcript=stored_transcript,
         tool=call.name,
-        args=call.args,
+        args=_sanitize_args(call.name, call.args, settings),
         outcome=outcome,
         speech=result.speech,
         artifact_id=artifact_id,
