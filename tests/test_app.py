@@ -137,3 +137,19 @@ def test_store_transcripts_false_writes_no_spoken_text_to_disk(jail_settings, au
     assert row is not None
     assert row[0] == "create_folder"  # tool name only, not the real transcript
     assert "Secret Project" not in row[0]
+
+
+def test_memory_store_failure_degrades_gracefully_instead_of_crashing(
+    jail_settings, audit_log, memory_store, mocker
+):
+    """Invariant 9 ('degrade, never brick'): a real memory-store failure
+    must not crash a command whose own tool call already succeeded, on
+    either the voice or text path - both share execute_tool_call. Forces
+    the real memory_store to raise (not a mocked-away record_execution) so
+    this exercises the actual failure this guards against."""
+    mocker.patch.object(memory_store, "record_activity", side_effect=OSError("disk full"))
+
+    result = handle_text("make a folder called Resilient")
+
+    assert result.ok
+    assert Path(jail_settings.paths.desktop, "Resilient").is_dir()

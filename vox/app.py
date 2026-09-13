@@ -13,7 +13,7 @@ import vox.tools  # noqa: F401 - import populates REGISTRY
 from vox.config import Settings, get_settings
 from vox.logging_setup import setup_logging
 from vox.memory.context import get_context
-from vox.memory.tracking import record_execution
+from vox.memory.tracking import Outcome, record_execution
 from vox.memory.tree import run_startup_maintenance
 from vox.platform import get_adapter
 from vox.platform.base import UnsupportedCapability
@@ -28,6 +28,20 @@ from vox.tools.registry import REGISTRY, ToolResult
 logger = logging.getLogger("vox.app")
 
 
+def _record_execution_safely(call: ToolCall, *, transcript: str, outcome: Outcome, result: ToolResult) -> None:
+    """`record_execution` is guard-layer memory plumbing, not a tool - a
+    failure in it (a locked/full memory.db, a permissions error) must never
+    crash a command whose own tool call already succeeded (invariant 9:
+    degrade, never brick). Both handle_text and the voice worker thread
+    share execute_tool_call, so wrapping it here - rather than relying on
+    start_voice_mode's own outer try/except, which only protects the voice
+    path - covers both."""
+    try:
+        record_execution(call, transcript=transcript, outcome=outcome, result=result)
+    except Exception:  # noqa: BLE001 - memory-store plumbing must not crash a command
+        logger.warning("record_execution failed for %r; continuing without a memory row", call.name, exc_info=True)
+
+
 def execute_tool_call(
     call: ToolCall, *, transcript: str, tier: str = "text", stt_confidence: float = 1.0
 ) -> ToolResult:
@@ -38,7 +52,7 @@ def execute_tool_call(
     registered = REGISTRY.get(call.name)
     if registered is None:
         result = ToolResult(ok=False, speech="I don't have that tool.")
-        record_execution(call, transcript=transcript, outcome="failed", result=result)
+        _record_execution_safely(call, transcript=transcript, outcome="failed", result=result)
         return result
 
     audit = get_audit_log()
@@ -59,7 +73,7 @@ def execute_tool_call(
         if not confirm.confirm_destructive(call.name, call.args):
             audit.update_status(row_id, status="cancelled")
             result = ToolResult(ok=False, speech="Cancelled.")
-            record_execution(call, transcript=transcript, outcome="cancelled", result=result)
+            _record_execution_safely(call, transcript=transcript, outcome="cancelled", result=result)
             return result
 
     start = time.monotonic()
@@ -69,13 +83,13 @@ def execute_tool_call(
     except JailViolation as exc:
         audit.update_status(row_id, status="rejected", error=str(exc))
         result = ToolResult(ok=False, speech="That location isn't allowed.")
-        record_execution(call, transcript=transcript, outcome="failed", result=result)
+        _record_execution_safely(call, transcript=transcript, outcome="failed", result=result)
         return result
     except Exception as exc:  # noqa: BLE001 - tools must not raise; this is the backstop
         logger.error("tool %s raised unexpectedly", call.name, exc_info=True)
         audit.update_status(row_id, status="failed", error=str(exc))
         result = ToolResult(ok=False, speech="Something went wrong.")
-        record_execution(call, transcript=transcript, outcome="failed", result=result)
+        _record_execution_safely(call, transcript=transcript, outcome="failed", result=result)
         return result
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -90,7 +104,7 @@ def execute_tool_call(
         settings = get_settings()
         confirm.arm_undo(call.name, result.artifact_path, settings.security.undo_window_s)
 
-    record_execution(call, transcript=transcript, outcome="ok" if result.ok else "failed", result=result)
+    _record_execution_safely(call, transcript=transcript, outcome="ok" if result.ok else "failed", result=result)
     return result
 
 
