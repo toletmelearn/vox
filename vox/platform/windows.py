@@ -26,6 +26,7 @@ import win32security
 from PIL import ImageGrab
 
 from vox.platform.base import KnownFolder, UnsupportedCapability, WindowInfo
+from vox.platform.windows_appx import find_appx_package
 
 logger = logging.getLogger("vox.platform.windows")
 
@@ -206,11 +207,13 @@ class WindowsAdapter:
                 win32process.AttachThreadInput(current_thread, fg_thread, False)
 
     def find_installed_app(self, target: Any) -> str | None:
-        """Registry App Paths, then a Start Menu shortcut scan (spec Section
-        6A Step 2), tried against each of `target.windows_app_ids` in
-        order. Both are genuinely slow (a Start Menu walk especially) —
-        resolver/detect.py caches the result for 24h, so this only actually
-        runs once per target per TTL window, not on every open_target call."""
+        """Registry App Paths, then a Start Menu shortcut scan, then a
+        Microsoft Store/MSIX package lookup (spec Section 6A Step 2), tried
+        against each of `target.windows_app_ids` /
+        `target.windows_package_family_names` in order. All three are
+        genuinely slow (a Start Menu walk especially) — resolver/detect.py
+        caches the result for 24h, so this only actually runs once per
+        target per TTL window, not on every open_target call."""
         app_ids = list(getattr(target, "windows_app_ids", None) or [])
         for app_id in app_ids:
             exe = _registry_app_path(app_id)
@@ -220,11 +223,19 @@ class WindowsAdapter:
             shortcut = _find_start_menu_shortcut(app_id)
             if shortcut:
                 return shortcut
+        for family_name in list(getattr(target, "windows_package_family_names", None) or []):
+            launch_uri = find_appx_package(family_name)
+            if launch_uri:
+                return launch_uri
         return None
 
     def launch(self, exe_or_uri: str, args: list[str] | None = None) -> bool:
         try:
-            if "://" in exe_or_uri:
+            # A `shell:AppsFolder\...` string (find_appx_package's return
+            # value) is a shell-namespace path, not a real filesystem exe -
+            # Popen can't launch it, but ShellExecute (what os.startfile
+            # wraps) resolves it the same way it resolves a `foo://` URI.
+            if "://" in exe_or_uri or exe_or_uri.lower().startswith("shell:"):
                 os.startfile(exe_or_uri)  # noqa: S606 - not a shell string, a fixed URI
                 return True
             subprocess.Popen([exe_or_uri, *(args or [])])

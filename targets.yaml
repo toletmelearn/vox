@@ -21,7 +21,8 @@ whatsapp:
   web_search_url: null
   window_title_match: ["WhatsApp"]
   windows_app_ids: ["WhatsApp"]
-  process_names: ["WhatsApp.exe"]
+  process_names: ["WhatsApp.Root.exe"]
+  windows_package_family_names: ["5319275A.WhatsAppDesktop_cv1g1gvanyjgm"]
   prefer: "app"
 
 gmail:

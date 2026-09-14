@@ -5,7 +5,7 @@ resolution ladder itself is `resolver/resolve.py`."""
 from __future__ import annotations
 
 import difflib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +29,14 @@ class Target:
     window_title_match: list[str]
     windows_app_ids: list[str]
     process_names: list[str]
+    # Microsoft Store/MSIX apps (spec Section 6A Step 2) register in neither
+    # `App Paths` nor a Start Menu `.lnk` - confirmed live against this dev
+    # machine's real WhatsApp Desktop install, which is Store-installed.
+    # `windows_app_ids`/`process_names` alone can't find these; this is the
+    # package family name (`Name_PublisherId`, stable across version
+    # updates) `find_appx_package` needs instead. Defaulted so existing
+    # non-Store targets don't have to spell out an empty list.
+    windows_package_family_names: list[str] = field(default_factory=list)
     prefer: TargetPreference = "app"
 
 
@@ -65,6 +73,7 @@ def load_targets(path: Path | None = None) -> dict[str, Target]:
             window_title_match=list(fields.get("window_title_match") or []),
             windows_app_ids=list(fields.get("windows_app_ids") or []),
             process_names=list(fields.get("process_names") or []),
+            windows_package_family_names=list(fields.get("windows_package_family_names") or []),
             prefer=fields.get("prefer", "app"),
         )
     return catalogue
